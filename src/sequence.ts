@@ -2,7 +2,6 @@ import type {AnimationTiming, AnimationTimingOptions} from "./animation-timing.t
 import {AnimationDefinition} from "./animation.ts";
 import type {At} from "./at.ts";
 import type {AnimationMapping, AnimationValues, SequenceMapping, Target} from "./dom/mapping.ts";
-import type {PlaybackOptions} from "./playback-options.ts";
 import {
     entryPathOf,
     type EntryPath,
@@ -117,7 +116,7 @@ export class SequenceDefinitionBuilder<Names extends string = never> {
     }
 
     /** Names the unnamed entries in order, as `a` to `z`, then `aa` and on, skipping the names given. */
-    build(options: PlaybackOptions = {}): SequenceDefinition {
+    build(): SequenceDefinition {
         const givenNames = new Set(this.givenNames);
         let builder: SequenceTimingBuilder<SequenceTimingEntries> = SequenceTiming.builder();
         const entries: SequenceDefinitionEntry[] = [];
@@ -138,7 +137,7 @@ export class SequenceDefinitionBuilder<Names extends string = never> {
                 entries.push({name, animation: definition});
             }
         }
-        return createSequenceDefinition(entries, builder.build(options));
+        return createSequenceDefinition(entries, builder.build());
     }
 
     private get givenNames(): string[] {

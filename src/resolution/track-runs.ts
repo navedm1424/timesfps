@@ -75,11 +75,6 @@ export class TrackRun {
         return new TrackRun([...this.spans, ...holdSpans(this.endValue, this.end, time)]);
     }
 
-    /** Holds `value` from `time` until the run starts. */
-    heldFrom(time: Seconds, value: CSSValue | null): TrackRun {
-        return new TrackRun([...holdSpans(value, time, this.start), ...this.spans]);
-    }
-
     /**
      * The run in the iteration at `index` of a repeat whose iterations last `iterationDuration`, each starting after the previous one and the repeat delay.
      * Every other iteration of a reverse or a mirror flips in time: a reverse runs the easing backwards, a mirror keeps it running forwards through flipped stops.

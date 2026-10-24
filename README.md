@@ -4,8 +4,7 @@
 
 - **Truly fluid native springs.** Springs are fitted as cubic Béziers that follow the real motion within 0.1%, not sampled into `linear()` approximations.
 - **Yoyo and mirror repeats.** Every other play runs backwards (`reverse`), or swaps its values while its easing keeps running forwards (`mirror`).
-- **Repeat delays,** on animations and sequences alike.
-- **Compounding nested repeats.** Sequences nest, and an animation repeating inside a repeating sequence plays all of its repeats in every iteration of the sequence.
+- **Repeat delays** between an animation's plays.
 
 It's built on the Web Animations API. You describe an animation once and map it onto elements and CSS values, and it runs as native animations, with no JavaScript per frame.
 
@@ -49,20 +48,20 @@ page.animate('.dot', {scale: [1, 1.4]}, {
     repeat: Infinity, repeatMode: 'mirror', repeatDelay: 0.6
 });
 
-// A choreographed intro that plays twice: forwards, then backwards.
+// A choreographed intro.
 const intro = sequence()
     .add('h1', {opacity: [0, 1], translate: [-40, 0]}, {duration: 0.6, bounce: 0.2}, {name: 'title'})
     .add('h2', {opacity: [0, 1]}, {duration: 0.4, easing: 'easeOut'}, {at: '-0.3'})
     .add('#cta', {scale: [0.8, 1]}, {stiffness: 300, damping: 20}, {at: 'title<+50%'})
-    .build({repeat: 1, repeatMode: 'reverse'});
+    .build();
 
 page.animate(intro);
 
-// One definition, played in two places: each card lifts, and its icon fades in a quarter of the way through.
+// One definition, played in two places: the cards lift one after another, then their icons fade in.
 const cards = sequence()
-    .add('.card', {translate: [40, 0]}, {duration: 0.6, bounce: 0.2}, {name: 'lift'})
-    .add('.card .icon', {opacity: [0, 1]}, {duration: 0.3}, {at: 'lift<+25%'})
-    .build({delay: stagger(0.1)});
+    .add('.card', {translate: [40, 0]}, {duration: 0.6, bounce: 0.2, delay: stagger(0.1)})
+    .add('.card .icon', {opacity: [0, 1]}, {duration: 0.3, delay: stagger(0.1)})
+    .build();
 
 animator({scope: featuredList}).animate(cards);
 animator({scope: archiveList}).animate(cards);
@@ -134,7 +133,7 @@ animation('.card', {
 **Any value the property takes works,** including colours, filters and transforms, except in these cases:
 
 - the timing is a spring;
-- the values have keys between 0 and 1, and the animation repeats with a `repeatDelay`, in `mirror` mode, or inside a repeating sequence;
+- the values have keys between 0 and 1, and the animation repeats with a `repeatDelay` or in `mirror` mode;
 - a value is missing at 0, and the animation starts while the value underneath is still changing.
 
 In these cases, every value must be a single number, with or without a unit (`'2em'`, `'50%'`, `'0.5turn'`), or a CSS expression that comes to one (`'calc(100% - 2rem)'`, `'var(--size)'`). Also in these cases:
@@ -275,14 +274,14 @@ A stagger is just a function `(index, total) => seconds`, so you can pass your o
 sequence()
     .add(target, values, timing, placement?)
     .add(definition, placement?)
-    .build(playbackOptions?)
+    .build()
 ```
 
 A sequence lays **entries** out in time. An entry is an animation, written inline or as an `animation()` definition, or another sequence.
 
 - **Inline:** `add(target, values, timing, placement?)` takes the same arguments as `animation()`, and the entry's placement: `{name?, at?}`.
 - **A definition:** `add(definition, placement?)` takes an `animation()` definition or a built sequence, with `{name?, at?}`.
-- **`build(playbackOptions?)`** gives you a `SequenceDefinition`. It takes the sequence's own `delay`, which can be a stagger, and its repeat options.
+- **`build()`** gives you a `SequenceDefinition`.
 
 ```ts
 const fadeIn = animation('.note', {opacity: [0, 1]}, {duration: 0.3});
@@ -358,15 +357,15 @@ An entry's `at` says when it starts: a **reference point**, then up to three **o
 | `'later<'` | `later` isn't an earlier entry. |
 | `'+abc'`, `'+Infinity'` | Not a finite number. |
 
-### Nesting and repeating
+### Nesting
 
-Sequences nest, and take the same repeat options as animations:
+Sequences nest:
 
 ```ts
 const card = sequence()
     .add('.card', {scale: [1, 1.05]}, {duration: 0.3, easing: 'easeOut'})
     .add('.card .icon', {opacity: [0.6, 1]}, {duration: 0.5}, {at: '<'})
-    .build({repeat: 2, repeatDelay: 0.5, repeatMode: 'reverse'});
+    .build();
 
 const page = sequence()
     .add(intro, {name: 'intro'})
@@ -376,26 +375,6 @@ const page = sequence()
 
 - A nested sequence is one entry of the outer one. Its own positions only place its entries within it.
 - Positions never refer into a nested sequence.
-- **Repeats compound.** An animation that repeats inside a repeating sequence plays all of its repeats in every iteration of the sequence.
-- **Infinite repeats inside.** An animation that repeats forever plays only its first iteration in each iteration of the sequence, and carries on repeating once the sequence is done.
-- For a sequence, `'reverse'` reverses the whole iteration in time. `'mirror'` does the same, but keeps each animation's easing running forwards through swapped values.
-
-### Staggered sequences
-
-A sequence's `delay` can be a stagger. The sequence then plays once for each element index: the copy at index 2 plays the third element of each of its animations. A subsequence in it plays as a whole, as one element. Every copy plays its entries at the times they'd have without the stagger, and the stagger delays the whole copy.
-
-```ts
-const cards = sequence()
-    .add('.card', {scale: [1, 1.05]}, {duration: 0.3}, {name: 'lift'})
-    .add('.card .icon', {opacity: [0, 1]}, {duration: 0.5})
-    .build({delay: stagger(0.1)});
-
-animator().animate(cards);
-```
-
-- Each card's icon fades in once that card has lifted.
-- The stagger runs over the largest number of elements of any of its entries, a subsequence counting as one. An entry with fewer elements lines up with it at the stagger's `from`: its first elements with the first ones for `'first'`, its middle with the middle for `'center'`, and its last with the last for `'last'`. Without a `from`, as with your own function or an index `from`, its first elements line up.
-- A stagger inside it works as it does in any sequence: the entries after it wait for its latest element, in every copy.
 
 ### Overlaps
 
@@ -436,11 +415,11 @@ const reveal = SequenceTiming.builder()
     .add(rise, 'title')
     .add({duration: 0.4, easing: 'easeOut'}, 'subtitle', '-0.3')
     .add({stiffness: 300, damping: 20}, 'cta', 'title<+50%')
-    .build({repeat: 1, repeatMode: 'reverse'});
+    .build();
 ```
 
 - **`add(timing, name, at?)`**: the name is required, because the mapping refers to entries by it. The timing is an `AnimationTiming`, a transition with its options, or another `SequenceTiming`. Positions work as in `sequence()`.
-- **`build(playbackOptions?)`** takes the same options as a sequence's `build`.
+- **`build()`** gives you the `SequenceTiming`.
 - Builders are immutable here too.
 
 To play it, give an animator's `animate()` the timing and a **mapping** of the same shape, keyed by entry name. Each animation entry takes `[target, values]`, and a nested sequence timing takes a nested mapping:

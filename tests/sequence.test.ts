@@ -71,17 +71,6 @@ describe("resolvePosition", () => {
 describe("SequenceTimingBuilder", () => {
     const builder = () => SequenceTiming.builder().add(second, 'a');
 
-    it("rejects time fields that aren't finite and a repeat count that isn't a number", () => {
-        expect(() => builder().build({delay: Infinity})).toThrow(RangeError);
-        expect(() => builder().build({repeatDelay: NaN})).toThrow(RangeError);
-        expect(() => builder().build({repeat: NaN})).toThrow(RangeError);
-    });
-
-    it("clamps negative delays and repeats to 0 and rounds fractional repeat counts down", () => {
-        expect(builder().build({delay: -3, repeat: -2.5, repeatDelay: -1}).playback).toEqual({delay: 0, repeat: 0, repeatDelay: 0});
-        expect(builder().build({repeat: 2.7}).playback.repeat).toBe(2);
-    });
-
     it("takes a transition together with its timing's options", () => {
         const timing = SequenceTiming.builder().add({duration: 1, delay: 0.5, repeat: 2}, 'a').build();
         expect(timing.entries[0].animation.playback).toEqual({delay: 0.5, repeat: 2});
@@ -247,7 +236,7 @@ describe("sequence", () => {
 
     it("takes definitions, named or not, and positions that refer to the names given", () => {
         const fadeIn = animation('.note', {opacity: [0, 1]}, fade);
-        const nested = sequence().add('#cta', {scale: [0.8, 1]}, fade).build({repeat: 1});
+        const nested = sequence().add('#cta', {scale: [0.8, 1]}, fade).build();
         const definition = sequence()
             .add('h1', {opacity: [0, 1]}, {...fade, delay: 0.1}, {name: 'title'})
             .add(fadeIn, {at: 'title<+0.2'})

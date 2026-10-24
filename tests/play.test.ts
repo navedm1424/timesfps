@@ -22,8 +22,8 @@ Object.assign(globalThis, {
 it("plays definitions, naming animations by entry path and property", () => {
     const definition = sequence()
         .add('.card', {translate: [40, 0], opacity: [0, 1]}, {duration: 0.6, bounce: 0.2}, {name: 'lift'})
-        .add('.icon', {opacity: 1}, {duration: 0.3}, {at: 'lift<+25%'})
-        .build({delay: stagger({step: 0.1})});
+        .add('.icon', {opacity: 1}, {duration: 0.3, delay: stagger({step: 0.1})}, {at: 'lift<+25%'})
+        .build();
     const controls = animator().animate(definition);
     expect(controls.animations.map(({id}) => id).sort()).toEqual(['a:opacity', 'a:opacity', 'lift:opacity', 'lift:opacity', 'lift:translate', 'lift:translate']);
     const iconDelays = [icon, otherIcon].map(element => (element.created[0]!.options as {delay: number}).delay);

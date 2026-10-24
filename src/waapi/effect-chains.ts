@@ -257,7 +257,7 @@ function resolveChainValues(element: Element, property: string, currentText: str
 
 const sameUnitAdvice = "Use values in one unit, or expressions that resolve to one. "
     + "To have values passed through as they are, use only native easings (cubic Bézier, steps or linear), "
-    + "give no values between 0 and 1 to an animation whose repeats are played as keyframes: one with a repeat delay, in mirror mode, or inside a repeating sequence, "
+    + "give no values between 0 and 1 to an animation whose repeats are played as keyframes: one with a repeat delay or in mirror mode, "
     + "and don't start an entry without a value at 0 while the one under it is between two of its values.";
 
 interface Numeric {

@@ -1,7 +1,7 @@
 {
   "name": "timesfps",
   "version": "1.0.0-alpha.1",
-  "description": "Truly fluid spring motion on WAAPI, no `linear()` approximations. Yoyo and mirror repeats, repeat delays, and nested repeats. All natively played.",
+  "description": "Truly fluid spring motion on WAAPI, no `linear()` approximations. Yoyo and mirror repeats, and repeat delays. All natively played.",
   "keywords": [
     "animation",
     "web-animations-api",

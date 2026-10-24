@@ -1,6 +1,5 @@
 import {AnimationTiming, type AnimationTimingOptions} from "./animation-timing.ts";
 import {type At, checkPositionDescriptor, parsePositionDescriptor, type PositionDescriptor} from "./at.ts";
-import {checkPlaybackOptions, type PlaybackDescriptor, playbackDescriptorOf, type PlaybackOptions} from "./playback-options.ts";
 import {isProduction} from "./utils/environment.ts";
 
 export interface AnimationTimingEntry<Name extends string = string, Names extends string = string> {
@@ -32,8 +31,8 @@ const SEQUENCE_TIMING_CONSTRUCTION_LICENSE = Symbol("SequenceTimingConstructionL
 function createSequenceTimingBuilder(): SequenceTimingBuilder {
     return new (SequenceTimingBuilder as any)([], SEQUENCE_TIMING_CONSTRUCTION_LICENSE);
 }
-function createSequenceTiming<Entries extends SequenceTimingEntries>(entries: Entries, playback: PlaybackDescriptor): SequenceTiming<Entries> {
-    return new (SequenceTiming as any)(entries, playback, SEQUENCE_TIMING_CONSTRUCTION_LICENSE);
+function createSequenceTiming<Entries extends SequenceTimingEntries>(entries: Entries): SequenceTiming<Entries> {
+    return new (SequenceTiming as any)(entries, SEQUENCE_TIMING_CONSTRUCTION_LICENSE);
 }
 
 /** Builds a sequence timing; every `add` gives a new builder, so branches never share entries. */
@@ -83,11 +82,10 @@ export class SequenceTimingBuilder<Entries extends SequenceTimingEntries = []> {
             : {name, animation: timing instanceof AnimationTiming ? timing : AnimationTiming.of(timing), position});
     }
 
-    build(options: PlaybackOptions = {}): SequenceTiming<Entries> {
+    build(): SequenceTiming<Entries> {
         if (this.#entries.length === 0)
             throw new Error("A sequence needs at least one entry.");
-        checkPlaybackOptions(options, "The sequence");
-        return createSequenceTiming(this.#entries, playbackDescriptorOf(options));
+        return createSequenceTiming(this.#entries);
     }
 }
 
@@ -95,7 +93,6 @@ export class SequenceTimingBuilder<Entries extends SequenceTimingEntries = []> {
 export class SequenceTiming<Entries extends SequenceTimingEntries = SequenceTimingEntries> {
     private constructor(
         readonly entries: Entries,
-        readonly playback: PlaybackDescriptor,
         license?: typeof SEQUENCE_TIMING_CONSTRUCTION_LICENSE
     ) {
         if (license !== SEQUENCE_TIMING_CONSTRUCTION_LICENSE)

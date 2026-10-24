@@ -18,12 +18,12 @@ describe("the README's examples", () => {
             .add('h1', {opacity: [0, 1], translate: [-40, 0]}, {duration: 0.6, bounce: 0.2}, {name: 'title'})
             .add('h2', {opacity: [0, 1]}, {duration: 0.4, easing: 'easeOut'}, {at: '-0.3'})
             .add('#cta', {scale: [0.8, 1]}, {stiffness: 300, damping: 20}, {at: 'title<+50%'})
-            .build({repeat: 1, repeatMode: 'reverse'});
+            .build();
         page.animate(intro);
         const cards = sequence()
-            .add('.card', {translate: [40, 0]}, {duration: 0.6, bounce: 0.2}, {name: 'lift'})
-            .add('.card .icon', {opacity: [0, 1]}, {duration: 0.3}, {at: 'lift<+25%'})
-            .build({delay: stagger(0.1)});
+            .add('.card', {translate: [40, 0]}, {duration: 0.6, bounce: 0.2, delay: stagger(0.1)})
+            .add('.card .icon', {opacity: [0, 1]}, {duration: 0.3, delay: stagger(0.1)})
+            .build();
         animator({scope: featuredList}).animate(cards);
         animator({scope: archiveList}).animate(cards);
     });
@@ -53,7 +53,7 @@ describe("the README's examples", () => {
         stagger(0.05, {from: 'last', easing: 'easeOut'});
     });
 
-    it("type-check as `sequence` shows its entries, positions, nesting and staggers", () => {
+    it("type-check as `sequence` shows its entries, positions and nesting", () => {
         const fadeIn = animation('.note', {opacity: [0, 1]}, {duration: 0.3});
         const intro = sequence()
             .add('h1', {opacity: [0, 1]}, {duration: 0.6, bounce: 0.2}, {name: 'title'})
@@ -62,17 +62,11 @@ describe("the README's examples", () => {
         const card = sequence()
             .add('.card', {scale: [1, 1.05]}, {duration: 0.3, easing: 'easeOut'})
             .add('.card .icon', {opacity: [0.6, 1]}, {duration: 0.5}, {at: '<'})
-            .build({repeat: 2, repeatDelay: 0.5, repeatMode: 'reverse'});
+            .build();
         sequence()
             .add(intro, {name: 'intro'})
             .add(card, {at: '-0.2'})
             .build();
-        const cards = sequence()
-            .add('.card', {scale: [1, 1.05]}, {duration: 0.3}, {name: 'lift'})
-            .add('.card .icon', {opacity: [0, 1]}, {duration: 0.5})
-            .build({delay: stagger(0.1)});
-        animator().animate(cards);
-
         const positions = [
             '', '>', '<', '<<', '>>', 1.5, '+0.2', '<-0.1', '<+25%', '-25%', '<<+50%', '>>-25%', '-=25%', '>>+=10%', '<+50%-=50%+0.1'
         ] as const;
@@ -94,7 +88,7 @@ describe("the README's examples", () => {
             .add(rise, 'title')
             .add({duration: 0.4, easing: 'easeOut'}, 'subtitle', '-0.3')
             .add({stiffness: 300, damping: 20}, 'cta', 'title<+50%')
-            .build({repeat: 1, repeatMode: 'reverse'});
+            .build();
         animator().animate(reveal, {
             title: ['h1', {opacity: [0, 1], translate: [-40, 0]}],
             subtitle: ['h2', {opacity: [0, 1]}],
