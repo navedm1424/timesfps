@@ -19,13 +19,6 @@ export type SequenceTimingEntries = readonly SequenceTimingEntry[];
 
 type EntryNames<Entries extends SequenceTimingEntries> = Entries[number]['name'];
 
-/** An animation leaf's key in a sequence: the names of the entries leading to it, joined by `>`. */
-export type EntryPath = string;
-
-export function entryPathOf(parentPath: EntryPath | undefined, name: string): EntryPath {
-    return parentPath ? `${parentPath}>${name}` : name;
-}
-
 const SEQUENCE_TIMING_CONSTRUCTION_LICENSE = Symbol("SequenceTimingConstructionLicense");
 
 function createSequenceTimingBuilder(): SequenceTimingBuilder {

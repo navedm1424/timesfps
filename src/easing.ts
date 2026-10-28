@@ -56,13 +56,13 @@ export abstract class Easing {
             .map(offset => clamp(offset, 0, 1));
     }
 
-    /** The part of the window between the two offsets, which runs backwards when `endOffset` comes first. */
-    windowed(startOffset: number, endOffset: number): this {
+    /** A new easing of the part of the window between the two offsets, which runs backwards when `endOffset` comes first. */
+    segment(startOffset: number, endOffset: number): this {
         return this.withWindow(lerp(this.windowStart, this.windowEnd, startOffset), lerp(this.windowStart, this.windowEnd, endOffset)) as this;
     }
 
-    /** The window run backwards. */
-    reversed(): this {
+    /** A new easing of the window run backwards. */
+    reverse(): this {
         return this.withWindow(this.windowEnd, this.windowStart) as this;
     }
 

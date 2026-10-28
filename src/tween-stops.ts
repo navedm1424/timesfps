@@ -2,7 +2,7 @@ import type {CSSValue, RawTweenStops} from "./dom/mapping.ts";
 import type {Progress} from "./types.ts";
 import {sortedEntriesOf} from "./utils/records.ts";
 
-/** A `null` value is the value underneath as the entry starts. */
+/** A `null` value is the value underneath: at 0, as the entry starts; at 1, as it ends. */
 export interface TweenStop {
     offset: Progress;
     value: CSSValue | null;
@@ -10,12 +10,12 @@ export interface TweenStop {
 
 /**
  * One property's values at offsets from 0 to 1, in order, with a stop at each end.
- * A missing 0 is the value underneath as the entry starts; a missing 1 is the last value given.
+ * A missing 0 is the value underneath as the entry starts, and a missing 1 is the value underneath as it ends.
  */
 export class TweenStops {
     private constructor(readonly stops: readonly TweenStop[]) {}
 
-    /** The stops of one of the forms; a single value is the last, as in WAAPI, and a `null` is left out wherever it is. */
+    /** The stops of one of the forms; a single value is the last, as in WAAPI, and a `null` between the ends is left out. */
     static of(property: string, rawStops: RawTweenStops): TweenStops {
         const given: [Progress, CSSValue | null][] = typeof rawStops !== 'object'
             ? [[1, rawStops]]
@@ -27,13 +27,11 @@ export class TweenStops {
             if (!(offset >= 0 && offset <= 1))
                 throw new RangeError(`"${property}" has a value at ${offset}, outside the 0–1 range.`);
         }
-        const stops: TweenStop[] = given.flatMap(([offset, value]) => value === null ? [] : [{offset, value}]);
-        const first = stops[0];
-        const last = stops.at(-1);
-        if (!first || !last) throw new TypeError(`"${property}" has no values.`);
+        const stops: TweenStop[] = given.flatMap(([offset, value]) => value === null && offset !== 0 && offset !== 1 ? [] : [{offset, value}]);
+        if (stops.every(({value}) => value === null)) throw new TypeError(`"${property}" has no values.`);
 
-        if (first.offset !== 0) stops.unshift({offset: 0, value: null});
-        if (last.offset !== 1) stops.push({offset: 1, value: last.value});
+        if (stops[0]!.offset !== 0) stops.unshift({offset: 0, value: null});
+        if (stops.at(-1)!.offset !== 1) stops.push({offset: 1, value: null});
         return new TweenStops(stops);
     }
 
@@ -54,6 +52,11 @@ export class TweenStops {
     get(offset: Progress): CSSValue | null | undefined {
         const stop = this.stops.find(stop => stop.offset === offset);
         return stop ? stop.value : undefined;
+    }
+
+    /** The same stops with another value at the offset, which must already have a stop. */
+    withValueAt(offset: Progress, value: CSSValue | null): TweenStops {
+        return new TweenStops(this.stops.map(stop => stop.offset === offset ? {offset, value} : stop));
     }
 
     /** The same values played backwards: each moves from its offset to 1 minus it. */

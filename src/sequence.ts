@@ -2,13 +2,8 @@ import type {AnimationTiming, AnimationTimingOptions} from "./animation-timing.t
 import {AnimationDefinition} from "./animation.ts";
 import type {At} from "./at.ts";
 import type {AnimationMapping, AnimationValues, SequenceMapping, Target} from "./dom/mapping.ts";
-import {
-    entryPathOf,
-    type EntryPath,
-    SequenceTiming,
-    type SequenceTimingBuilder,
-    type SequenceTimingEntries
-} from "./sequence-timing.ts";
+import {type EntryPath, naming} from "./naming.ts";
+import {SequenceTiming, type SequenceTimingBuilder, type SequenceTimingEntries} from "./sequence-timing.ts";
 import {isProduction} from "./utils/environment.ts";
 
 /** Where an entry goes in a sequence: the name later positions refer to it by, and when it starts. */
@@ -123,7 +118,7 @@ export class SequenceDefinitionBuilder<Names extends string = never> {
         let ordinal = 0;
         const nextUnnamedName = () => {
             let name: string;
-            do name = alphabeticNameOf(ordinal++);
+            do name = naming.unnamedEntryNameOf(ordinal++);
             while (givenNames.has(name));
             return name;
         };
@@ -150,7 +145,7 @@ function definitionEntriesOf<Timing extends SequenceTiming>(timing: Timing, mapp
     if (!mapping) throw new TypeError(path ? `No mapping present for "${path}".` : "No mapping present.");
     const entries: SequenceDefinitionEntry[] = [];
     for (const entry of timing.entries) {
-        const entryPath = entryPathOf(path, entry.name);
+        const entryPath = naming.entryPathOf(path, entry.name);
         const entryMapping = mapping[entry.name];
         if (!entryMapping) throw new TypeError(`No mapping present for "${entryPath}".`);
         if ('sequence' in entry) {
@@ -165,12 +160,4 @@ function definitionEntriesOf<Timing extends SequenceTiming>(timing: Timing, mapp
         entries.push({name: entry.name, animation: new AnimationDefinition(target, values, entry.animation)});
     }
     return entries;
-}
-
-/** `a` for 0 to `z` for 25, then `aa`, `ab` and on. */
-function alphabeticNameOf(index: number): string {
-    let name = '';
-    for (let remaining = index + 1; remaining > 0; remaining = Math.floor((remaining - 1) / 26))
-        name = String.fromCharCode('a'.charCodeAt(0) + (remaining - 1) % 26) + name;
-    return name;
 }

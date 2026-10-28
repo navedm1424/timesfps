@@ -1,6 +1,22 @@
 import {checkNumber} from "../utils/validation.ts";
-import type {CSSValueResolver} from "./effect-chains.ts";
 import type {CSSValue} from "../dom/mapping.ts";
+
+/** Everything values need from where they play: their text, the property's current value, which values it takes, and their numbers in one unit. */
+export interface CSSValueResolver {
+    /** The value as CSS text; a bare number takes the property's default unit. */
+    textOf(property: string, value: CSSValue): string;
+    /** The property's computed value on the element as it is now. */
+    currentValueOf(element: Element, property: string): string;
+    /** Throws for a value the property doesn't take. */
+    validate(property: string, text: string): void;
+    /** The values as numbers in one unit, to interpolate between; throws when they don't come to one. */
+    alignedNumbersOf(element: Element, property: string, texts: readonly string[]): AlignedNumbers;
+}
+
+export interface AlignedNumbers {
+    unit: string;
+    numbersByText: ReadonlyMap<string, number>;
+}
 
 /** The CSS name of a property given in camelCase; a custom property is already given by it. */
 export function cssPropertyNameOf(property: string): string {
@@ -18,13 +34,65 @@ export function keyframePropertyOf(property: string): string {
     return property;
 }
 
-/** Resolves values on the page: its current values are computed styles, and its expressions resolve through probes. */
+/** Resolves values on the page: its current values are computed styles, the values it takes are what `CSS.supports` takes, and its values compute through probes. */
 export const domValueResolver: CSSValueResolver = {
     textOf: cssTextOf,
     currentValueOf: (element, property) => getComputedStyle(element).getPropertyValue(cssPropertyNameOf(property)).trim(),
-    accepts: (property, text) => CSS.supports(cssPropertyNameOf(property), text),
-    resolve: (element, property, text) => PropertyValueType.of(cssPropertyNameOf(property)).resolve(element, text)
+    validate: (property, text) => {
+        if (!CSS.supports(cssPropertyNameOf(property), text))
+            throw new TypeError(`"${text}" isn't a value "${property}" takes.`);
+    },
+    alignedNumbersOf: (element, property, texts) => alignNumbers(property, texts, text => PropertyValueType.of(cssPropertyNameOf(property)).resolve(element, text))
 };
+
+/** Takes values as plain numbers without a unit, for tracks that stand in for no property of an element. */
+export const plainNumberResolver: CSSValueResolver = {
+    textOf: (_property, value) => String(value),
+    currentValueOf: (_element, property) => {
+        throw new Error(`"${property}" has no current value off the page, so it needs a value at each end.`);
+    },
+    validate: () => {},
+    alignedNumbersOf: (_element, property, texts) => alignNumbers(property, texts, text => text)
+};
+
+/**
+ * The texts as numbers in one unit: as they are when they're all numbers in one unit, or else as `computedTextOf` gives them.
+ * Throws when even those don't share one unit.
+ */
+export function alignNumbers(property: string, texts: readonly string[], computedTextOf: (text: string) => string): AlignedNumbers {
+    const distinctTexts = [...new Set(texts)];
+    const given = distinctTexts.map(parseNumeric);
+    const numerics = given.every(numeric => numeric !== undefined && numeric.unit === given[0]!.unit)
+        ? given as Numeric[]
+        : distinctTexts.map(text => {
+            const computed = computedTextOf(text);
+            const numeric = parseNumeric(computed);
+            if (!numeric) throw new TypeError(`"${text}" comes to "${computed}" for "${property}", which isn't a single number with a unit. ${numbersAdvice}`);
+            return numeric;
+        });
+
+    const units = new Set(numerics.map(({unit}) => unit));
+    if (units.size > 1)
+        throw new Error(`The values of "${property}" come to different units: ${[...units].map(unit => `"${unit}"`).join(', ')}. ${numbersAdvice}`);
+    return {unit: numerics[0]!.unit, numbersByText: new Map(distinctTexts.map((text, index) => [text, numerics[index]!.value]))};
+}
+
+const numbersAdvice = "Use values in one unit, or expressions that come to one. "
+    + "To have values passed through as they are, use only native easings (cubic Bézier, steps or linear), "
+    + "and give no values between 0 and 1 to an animation whose repeats are played as keyframes: one with a repeat delay or in mirror mode.";
+
+interface Numeric {
+    value: number;
+    unit: string;
+}
+
+const numericPattern = /^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)([a-z%]*)\s*$/i;
+
+/** A number with an optional unit, the only form whose value is known without computing it. */
+function parseNumeric(text: string): Numeric | undefined {
+    const [, number, unit] = numericPattern.exec(text) ?? [];
+    return number === undefined ? undefined : {value: Number(number), unit: unit!.toLowerCase()};
+}
 
 /** A bare number takes the property's default unit. */
 function cssTextOf(property: string, value: CSSValue): string {

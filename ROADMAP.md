@@ -1,6 +1,6 @@
 # Roadmap
 
-What's planned for TimesFPS, grouped by area. Claude proposals are not final decisions; I may or may not go with them.
+What's planned for TimesFPS, grouped by area. The order they're written in isn't necessarily the order they'll be picked up in. Claude proposals are not final decisions; I may or may not go with them.
 
 ## Timing and choreography
 
@@ -24,6 +24,15 @@ The options are proposed under [Repeat options](#repeat-options).
 ### Nested repeats
 
 Sequences repeat at every level of nesting, each with its own repeat options, inside the repeats around it.
+
+#### Engineering problems
+
+**Entries on one track.** Entries here are animation entries with the same target and property.
+
+- **In a sequence that doesn't repeat**, entries stay separate, whether they overlap or not, and each keeps its own repeats. Where they overlap, the later one in time shows over the earlier ones.
+- **In a repeating sequence**, entries are always merged, whether they overlap or not. The merge places the later one in time on top of the earlier ones: wherever its keyframes cover theirs, its keyframes replace them. The repeating sequence can be their parent or a further ancestor.
+
+**Infinite repeats inside repeating sequences.** An entry that repeats forever inside a repeating sequence needs handling of its own. Idea: it gets a track entry of its own.
 
 ### Staggered sequences
 

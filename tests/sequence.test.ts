@@ -174,15 +174,15 @@ describe("TweenStops", () => {
         expect(stopsOf({1: 2, 0.5: 1})).toEqual([[0, null], [0.5, 1], [1, 2]]);
     });
 
-    it("starts a missing 0 from the value underneath, and ends a missing 1 on the last value", () => {
-        expect(stopsOf({0.5: 1})).toEqual([[0, null], [0.5, 1], [1, 1]]);
+    it("takes the value underneath for a missing 0 or 1", () => {
+        expect(stopsOf({0.5: 1})).toEqual([[0, null], [0.5, 1], [1, null]]);
         const stops = TweenStops.of('x', {0: 0, 0.5: 1});
-        expect([stops.startValue, stops.endValue]).toEqual([0, 1]);
+        expect([stops.startValue, stops.endValue]).toEqual([0, null]);
         expect(TweenStops.of('x', 1).startValue).toBeNull();
     });
 
-    it("leaves out null wherever it is, and rejects stops without values or outside 0–1", () => {
-        expect(stopsOf([0, null])).toEqual([[0, 0], [1, 0]]);
+    it("keeps null at the ends, leaves it out between them, and rejects stops without values or outside 0–1", () => {
+        expect(stopsOf([0, null])).toEqual([[0, 0], [1, null]]);
         expect(stopsOf([null, 1])).toEqual([[0, null], [1, 1]]);
         expect(stopsOf([0, null, 1])).toEqual([[0, 0], [1, 1]]);
         expect(() => stopsOf([])).toThrow(TypeError);

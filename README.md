@@ -120,7 +120,10 @@ animation('.card', {
 | `{0: 0}` or `[0, null]` | from 0, to the value underneath |
 | `[null, 1]` | from the value underneath, to 1, the same as `1` |
 
-- **The value underneath** is what the property would show at that moment without this animation: the value an earlier animation leaves it at, or, with none, the property's current value when you call `animate()`.
+- **The value underneath** comes from the animations next to this one, on the same property of the same element:
+    - At the start, it's the value the animation before it ends on. At the end, it's the value the one after it starts from.
+    - When this animation starts or ends while another one runs under it ([Overlaps](#overlaps)), it's that one's nearest key: the last it passed before the start, or the next it reaches after the end.
+    - With none of these, or when that value is missing too, it's the property's current value when you call `animate()`.
 - `null` at the start or the end stands for the value underneath. Between them, it's skipped.
 - Keys outside 0–1 throw.
 
@@ -134,7 +137,7 @@ animation('.card', {
 
 - the timing is a spring;
 - the values have keys between 0 and 1, and the animation repeats with a `repeatDelay` or in `mirror` mode;
-- a value is missing at 0, and the animation starts while the value underneath is still changing.
+- it overlaps another animation of the same property on the same element.
 
 In these cases, every value must be a single number, with or without a unit (`'2em'`, `'50%'`, `'0.5turn'`), or a CSS expression that comes to one (`'calc(100% - 2rem)'`, `'var(--size)'`). Also in these cases:
 
@@ -380,10 +383,11 @@ const page = sequence()
 
 When entries animate the same property of the same element:
 
-- The one added later shows over the earlier one while it runs.
-- An earlier entry that falls entirely within a later one never shows.
-- Only the entry that starts first holds its start values before it starts.
-- An entry holds its end values after it ends, unless one added before it is still running.
+- The one that starts later shows over the earlier one while it runs, and the earlier one shows again once it ends. When they start together, the one added later shows over the other.
+- Entries whose ends only touch don't overlap.
+- An entry that repeats forever stays on its own: entries that start after it show over it while they run.
+- Only the entries that start first hold their start values before they start.
+- An entry holds its end values after it ends, unless an entry that repeats forever is still running under it.
 
 <br/><br/>
 
@@ -467,7 +471,7 @@ const controls = animator({scope}).animate(definition);
 | `animations` | The native `Animation` objects. |
 
 - Animations hold their end values after they end. To let go of them, cancel the controls once they've finished.
-- Each native animation's `id` is its entry's path and its property, such as `intro>title:opacity`, or just the property for an animation on its own. Unnamed entries are named `a`, `b`, … in their order.
+- Each native animation's `id` is its entry's path and its property, such as `intro>title:opacity`, or just the property for an animation on its own. Unnamed entries are named `a`, `b`, … in their order. Entries that overlap on one property play as one animation, named by their paths joined with `+`, such as `intro>title+intro>subtitle:opacity`.
 
 <br/><br/>
 

@@ -7,7 +7,7 @@ import {linear} from "../src/easing-specifier.ts";
 import {NumericStops} from "../src/resolution/stops.ts";
 import {type AnimationPlan, plan, type SequencePlan} from "../src/resolution/plan.ts";
 import {SequenceDefinition} from "../src/sequence.ts";
-import {type EntryPath, entryPathOf, SequenceTiming} from "../src/sequence-timing.ts";
+import {SequenceTiming} from "../src/sequence-timing.ts";
 import type {PlaybackOptions, RepeatOptions} from "../src/playback-options.ts";
 import {resolveTransition, type TransitionOptions} from "../src/transition.ts";
 import type {Seconds} from "../src/types.ts";
@@ -15,19 +15,21 @@ import {lerp} from "../src/utils/math.ts";
 import {sortedEntriesOf} from "../src/utils/records.ts";
 import type {NativeAnimationEffect, NativeKeyframe} from "../src/waapi/native-effects.ts";
 import {cssEasingOf, type NativeEasing} from "../src/waapi/native-easing.ts";
-import type {CSSValueResolver} from "../src/waapi/effect-chains.ts";
-import {type AnimationTracks, AnimationTracksResolver} from "../src/waapi/tracks.ts";
+import {alignNumbers, type CSSValueResolver} from "../src/waapi/css-values.ts";
+import {naming, type EntryPath} from "../src/naming.ts";
+import {TracksResolver} from "../src/resolution/tracks.ts";
+import {type AnimationTracks, NativeEffectsResolver} from "../src/waapi/tracks.ts";
 
 const element = {} as Element;
 const scope = {} as Element;
 const line = {x: {0: 0, 1: 1}};
 
-/** Values are plain numbers without a unit, and every property is 0.25 now. */
+/** Values are plain numbers without a unit, and every property is 0.25 now; any text is a value, and computes as it is. */
 const numericResolver: CSSValueResolver = {
     textOf: (_property, value) => String(value),
     currentValueOf: () => '0.25',
-    accepts: () => true,
-    resolve: (_element, _property, text) => text
+    validate: () => {},
+    alignedNumbersOf: (_element, property, texts) => alignNumbers(property, texts, text => text)
 };
 
 function numericStopsOf(values: { [offset: number]: number }): NumericStops {
@@ -50,7 +52,7 @@ function sequencePlanOf(
     elementsByPath: { [path: EntryPath]: Element[] } = {}
 ): SequencePlan {
     const mappingOf = (sequenceTiming: SequenceTiming, path: EntryPath | undefined): object => Object.fromEntries(sequenceTiming.entries.map(entry => {
-        const entryPath = entryPathOf(path, entry.name);
+        const entryPath = naming.entryPathOf(path, entry.name);
         return [entry.name, 'sequence' in entry ? mappingOf(entry.sequence, entryPath) : [elementsByPath[entryPath] ?? [element], valuesByPath[entryPath]]];
     }));
     return plan(SequenceDefinition.of(timing, mappingOf(timing, undefined) as never), target => resolveTargets(target, scope));
@@ -63,12 +65,12 @@ function sequenceEndOf(
     elementsByPath: { [path: EntryPath]: Element[] } = {}
 ): Seconds {
     const measuring = SequenceTiming.builder().add(sequence, 'measured').add(AnimationTiming.of({duration: 1}), 'next', 'measured>').build();
-    const inMeasured = <Value>(byPath: { [path: EntryPath]: Value }) => Object.fromEntries(Object.entries(byPath).map(([path, value]) => [entryPathOf('measured', path), value]));
+    const inMeasured = <Value>(byPath: { [path: EntryPath]: Value }) => Object.fromEntries(Object.entries(byPath).map(([path, value]) => [naming.entryPathOf('measured', path), value]));
     return sequencePlanOf(measuring, {...inMeasured(valuesByPath), next: line}, inMeasured(elementsByPath)).entries.get('next')!.position;
 }
 
 function animationTracksOf(timing: AnimationTiming, values: AnimationValues = line, elements = [element], resolver = numericResolver): AnimationTracks {
-    return AnimationTracksResolver.resolve(animationPlanOf(timing, elements, values), resolver);
+    return NativeEffectsResolver.resolve(new TracksResolver(animationPlanOf(timing, elements, values), naming).resolve(), resolver);
 }
 
 function sequenceTracksOf(
@@ -77,7 +79,7 @@ function sequenceTracksOf(
     elementsByPath: { [path: EntryPath]: Element[] } = {},
     resolver = numericResolver
 ): AnimationTracks {
-    return AnimationTracksResolver.resolve(sequencePlanOf(timing, valuesByPath, elementsByPath), resolver);
+    return NativeEffectsResolver.resolve(new TracksResolver(sequencePlanOf(timing, valuesByPath, elementsByPath), naming).resolve(), resolver);
 }
 
 function timingOf({delay, duration, iterations, direction, fill}: NativeAnimationEffect) {
@@ -229,7 +231,7 @@ describe("plans", () => {
 
 });
 
-describe("AnimationTracksResolver plans", () => {
+describe("NativeEffectsResolver plans", () => {
     const play = {duration: 1};
     const effectsOf = (timing: AnimationTiming) => animationTracksOf(timing).get(element)!.x!;
     const repeats = (options: PlaybackOptions) => effectsOf(AnimationTiming.of(play, {repeatDelay: 0.5, ...options}));
@@ -303,10 +305,10 @@ describe("AnimationTracksResolver plans", () => {
         expect(keyframesOf(effects[0]!)).toEqual([[0, 0], [1, 1]]);
     });
 
-    it("ends a mirrored play without duration where its last play ends", () => {
+    it("plays a play without duration once, whatever its repeats", () => {
         const effects = effectsOf(AnimationTiming.of({duration: 0}, {repeat: 1, repeatDelay: 0.5, repeatMode: 'mirror'}));
-        expect(trackValueAt(effects, 0.25)).toBe(1);
-        expect(trackValueAt(effects, 1)).toBe(0);
+        expect(effects.map(timingOf)).toEqual([{delay: 0, duration: 0, iterations: 1, direction: 'normal', fill: 'both'}]);
+        expect([trackValueAt(effects, 0.25), trackValueAt(effects, 1)]).toEqual([1, 1]);
     });
 
     it("adds each element's staggered delay to its effects", () => {
@@ -340,7 +342,7 @@ function expectTrackToFollow(effects: readonly NativeAnimationEffect[], definedA
     }
 }
 
-describe("AnimationTracksResolver values", () => {
+describe("NativeEffectsResolver values", () => {
     const repeatings: RepeatOptions[] = [
         {},
         {repeat: 2, repeatMode: 'loop'},
@@ -364,16 +366,90 @@ describe("AnimationTracksResolver values", () => {
     }
 });
 
-describe("AnimationTracksResolver sequences", () => {
+describe("NativeEffectsResolver sequences", () => {
     const sample = (effects: readonly NativeAnimationEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
 
-    it("fills only the first-starting effect backwards, and forwards only what nothing earlier outlasts", () => {
+    it("keeps entries that don't overlap apart, in the order they start, each holding after it and only the first before it", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 2)
+            .add(AnimationTiming.of({duration: 1}), 'b', 0)
+            .build();
+        const effects = sequenceTracksOf(sequence, {a: {x: {0: 0, 1: 1}}, b: {x: {0: 5, 1: 6}}}).get(element)!.x!;
+        expect(effects.map(({name, delay, fill}) => ({name, delay, fill}))).toEqual([{name: 'b', delay: 0, fill: 'both'}, {name: 'a', delay: 2, fill: 'forwards'}]);
+        expect(sample(effects, [1.5, 2.5, 4])).toEqual([6, 0.5, 1]);
+    });
+
+    it("keeps entries whose ends only touch apart", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a')
+            .add(AnimationTiming.of({duration: 1}), 'b')
+            .build();
+        expect(sequenceTracksOf(sequence, {a: line, b: line}).get(element)!.x!.map(({name}) => name)).toEqual(['a', 'b']);
+    });
+
+    it("layers entries that overlap, the one that starts later over the earlier, whichever is declared first", () => {
         const sequence = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 2}), 'a', 0.5)
             .add(AnimationTiming.of({duration: 1}), 'b', 0)
             .build();
-        expect(sequenceTracksOf(sequence, {a: {x: line.x}, b: {x: line.x}}).get(element)!.x!.map(({delay, fill}) => ({delay, fill})))
-            .toEqual([{delay: 0.5, fill: 'forwards'}, {delay: 0, fill: 'backwards'}]);
+        const effects = sequenceTracksOf(sequence, {a: {x: line.x}, b: {x: line.x}}).get(element)!.x!;
+        expect(effects.map(effect => ({name: effect.name, ...timingOf(effect)}))).toEqual([
+            {name: 'b', delay: 0, duration: 1, iterations: 1, direction: 'normal', fill: 'both'},
+            {name: 'a', delay: 0.5, duration: 2, iterations: 1, direction: 'normal', fill: 'forwards'}
+        ]);
+        expect(sample(effects, [0.25, 0.75, 2])).toEqual(closeTo([[0.25, 0.125, 0.75]])[0]);
+    });
+
+    it("puts an entry over one that starts with it when it's declared later, and shows the earlier one again once it ends", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 0)
+            .build();
+        const effects = sequenceTracksOf(sequence, {a: {x: line.x}, b: {x: {0: 5, 1: 6}}}).get(element)!.x!;
+        expect(sample(effects, [0.5, 1.5])).toEqual(closeTo([[5.5, 0.75]])[0]);
+    });
+
+    it("keeps the repeats of an entry with another over it as its own", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}, {repeat: 2}), 'a')
+            .add(AnimationTiming.of({duration: 0.5}), 'b', 1.5)
+            .build();
+        const effects = sequenceTracksOf(sequence, {a: line, b: {x: {0: 5, 1: 6}}}).get(element)!.x!;
+        expect(effects.map(timingOf)).toEqual([
+            {delay: 0, duration: 1, iterations: 3, direction: 'normal', fill: 'both'},
+            {delay: 1.5, duration: 0.5, iterations: 1, direction: 'normal', fill: 'none'}
+        ]);
+        expect(sample(effects, [0.5, 1.75, 2.5])).toEqual(closeTo([[0.5, 5.5, 0.5]])[0]);
+    });
+
+    it("keeps an entry without duration that falls within another apart", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a')
+            .add(AnimationTiming.of({duration: 0}), 'b', 1)
+            .build();
+        expect(sequenceTracksOf(sequence, {a: line, b: {x: {0: 5, 1: 6}}}).get(element)!.x!.map(({name}) => name)).toEqual(['a', 'b']);
+    });
+
+    it("layers an entry that repeats forever between the entries that start before and after it", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'i', 1)
+            .add(AnimationTiming.of({duration: 1.5}), 'b', 1.5)
+            .build();
+        const effects = sequenceTracksOf(sequence, {a: line, i: {x: {0: 10, 1: 11}}, b: {x: {0: 5, 1: 6}}}).get(element)!.x!;
+        expect(effects.map(({name}) => name)).toEqual(['a', 'i', 'b']);
+        expect(sample(effects, [0.5, 1.25, 2.25, 3.5])).toEqual(closeTo([[0.25, 10.25, 5.5, 10.5]])[0]);
+    });
+
+    it("keeps an entry that repeats forever apart, and doesn't hold an entry over it after it ends", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'a')
+            .add(AnimationTiming.of({duration: 1}), 'b', 2)
+            .build();
+        const effects = sequenceTracksOf(sequence, {a: line, b: {x: {0: 5, 1: 6}}}).get(element)!.x!;
+        expect(effects.map(({name, iterations, fill}) => ({name, iterations, fill})))
+            .toEqual([{name: 'a', iterations: Infinity, fill: 'both'}, {name: 'b', iterations: 1, fill: 'none'}]);
+        expect(sample(effects, [2.5, 3.5])).toEqual(closeTo([[5.5, 0.5]])[0]);
     });
 
     it("sets an entry without duration at its position, between the entries around it", () => {
@@ -386,36 +462,73 @@ describe("AnimationTracksResolver sequences", () => {
         expect(sample(effects, [1.25, 1.75, 2.5, 3.5])).toEqual(closeTo([[1, 0.75, 0.375, 0]])[0]);
     });
 
-    it("drops an effect declared earlier that lies within a later one", () => {
+    it("shows an entry that starts within an earlier one over it, while it runs", () => {
         const sequence = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 0.5}), 'a', 0.25)
             .add(AnimationTiming.of({duration: 1}), 'b', 0)
             .build();
-        expect(sequenceTracksOf(sequence, {a: {x: line.x}, b: {x: line.x}}).get(element)!.x!.map(({delay, fill}) => ({delay, fill})))
-            .toEqual([{delay: 0, fill: 'both'}]);
+        const effects = sequenceTracksOf(sequence, {a: {x: {0: 5, 1: 6}}, b: {x: line.x}}).get(element)!.x!;
+        expect(effects).toHaveLength(2);
+        expect(sample(effects, [0.125, 0.5, 0.875])).toEqual(closeTo([[0.125, 5.5, 0.875]])[0]);
     });
 });
 
-describe("AnimationTracksResolver effect chains", () => {
+describe("NativeEffectsResolver missing values", () => {
     const sample = (effects: readonly NativeAnimationEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
 
-    it("starts an entry without a value at 0 from the value the track shows as it starts", () => {
+    it("ends an entry without a value at 1 on the start of the entry after it", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a')
+            .add(AnimationTiming.of({duration: 1}), 'b', '+0.5')
+            .build();
+        const [a] = sequenceTracksOf(sequence, {a: {x: {0: 0}}, b: {x: {0: 5, 1: 6}}}).get(element)!.x!;
+        expect(keyframesOf(a!)).toEqual([[0, 0], [1, 5]]);
+    });
+
+    it("starts an entry over another without a value at 0 from the value of the one under it there", () => {
         const sequence = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 1}), 'a')
             .add(AnimationTiming.of({duration: 1}), 'b', '-0.5')
             .build();
         const effects = sequenceTracksOf(sequence, {a: {x: {0: 0, 1: 1}}, b: {x: {1: 2}}}).get(element)!.x!;
-        expect(sample(effects, [0.25, 0.75, 1.5])).toEqual(closeTo([[0.25, 0.5 + 0.25 * 1.5, 2]])[0]);
+        expect(sample(effects, [0.25, 0.75, 1.5])).toEqual(closeTo([[0.25, 0.875, 2]])[0]);
     });
 
-    it("starts a chain without a value at 0 from the property's current value", () => {
+    it("ends an entry over another without a value at 1 on the value of the one under it there", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a')
+            .add(AnimationTiming.of({duration: 0.5}), 'b', 0.5)
+            .build();
+        const effects = sequenceTracksOf(sequence, {a: line, b: {x: {0: 3}}}).get(element)!.x!;
+        expect(sample(effects, [0.75])).toEqual(closeTo([[1.75]])[0]);
+    });
+
+    it("starts an entry over one that repeats forever from the last stop that one reached", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'a')
+            .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
+            .build();
+        const [, b] = sequenceTracksOf(sequence, {a: {x: {0: 0, 0.5: 0.7, 1: 1}}, b: {x: {1: 6}}}).get(element)!.x!;
+        expect(keyframesOf(b!)).toEqual([[0, 0.7], [1, 6]]);
+    });
+
+    it("starts an entry from one under it that starts at the same moment, and takes nothing from one that ends at the same moment", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a')
+            .add(AnimationTiming.of({duration: 2}), 'b', 0)
+            .build();
+        const effects = sequenceTracksOf(sequence, {a: line, b: {x: {0.5: 6}}}).get(element)!.x!;
+        expect(sample(effects, [0, 2])).toEqual([0, 0.25]);
+    });
+
+    it("starts an entry without a value at 0 and nothing before it from the property's current value", () => {
         const effects = animationTracksOf(AnimationTiming.of({duration: 1}), {x: {1: 1}}).get(element)!.x!;
         expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 1]]);
     });
 });
 
-describe("AnimationTracksResolver values passed through", () => {
-    /** Takes any text, and resolves only plain numbers; colours have no number. */
+describe("NativeEffectsResolver values passed through", () => {
+    /** Takes any text, and has numbers only for plain numbers; colours have none. */
     const textResolver: CSSValueResolver = {...numericResolver, currentValueOf: () => 'none'};
     const textsOf = (effect: NativeAnimationEffect) => effect.keyframes.map(({value}) => value);
     const resolvedWith = (timing: AnimationTiming, values: AnimationValues) => animationTracksOf(timing, values, [element], textResolver).get(element)!;
@@ -474,8 +587,8 @@ describe("cssEasingOf", () => {
 
 describe("Easing windows", () => {
     it("gives the progress of the window without rescaling it, and runs it backwards when reversed", () => {
-        const easing = linear.windowed(0.25, 0.75);
-        expect([easing.progressAt(0), easing.progressAt(1), easing.reversed().progressAt(0)]).toEqual([0.25, 0.75, 0.75]);
+        const easing = linear.segment(0.25, 0.75);
+        expect([easing.progressAt(0), easing.progressAt(1), easing.reverse().progressAt(0)]).toEqual([0.25, 0.75, 0.75]);
         expect(easing.offsetsAt(0.5)).toEqual([0.5]);
     });
 });
