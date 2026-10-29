@@ -21,7 +21,7 @@ interface Placeholder {
     value: PendingValue | undefined;
 }
 
-type PendingValue = CSSValue | CurrentValueToken | Placeholder | InterpolatedValueToken<PendingValue>;
+export type PendingValue = CSSValue | CurrentValueToken | Placeholder | InterpolatedValueToken<PendingValue>;
 
 /** A repeat extrapolation before it knows whether it holds after. */
 type RepeatPattern = Omit<LoopExtrapolation, 'holdsAfter'> | Omit<OscillateExtrapolation, 'holdsAfter'>;
@@ -30,12 +30,9 @@ const hold: HoldExtrapolation = {type: 'hold'};
 
 /**
  * A track entry, built step by step: a play that repeats as its timing does, which is an entry's play, or a repeating sequence's iteration with its children merged into it.
- * Each missing value is a placeholder until a value is assigned to it. Then whether it's hidden, and whether it holds before and after, are set, and it builds into the track entry.
+ * Each missing value is a placeholder until a value is assigned to it. Then whether it holds before and after is set, and it builds into the track entry.
  */
 export class TrackEntryBuilder {
-    /** The builders in it that repeat forever, which continue on their own under it once it's done; none when it repeats forever too. */
-    private readonly copies: readonly TrackEntryBuilder[];
-    private hidden = false;
     private holdsBefore = false;
     private holdsAfter = false;
 
@@ -43,43 +40,17 @@ export class TrackEntryBuilder {
     private constructor(
         private readonly name: string | undefined,
         private readonly timing: PlayTiming,
-        private readonly play: TrackRun<PendingValue>,
-        children: readonly TrackEntryBuilder[] = []
-    ) {
-        this.copies = this.repeatsForever ? [] : children.flatMap(child => child.repeatsForever ? [child] : child.copies);
-    }
+        private readonly play: TrackRun<PendingValue>
+    ) {}
 
     /** An entry's play through its stops, each missing value a placeholder of its own. */
     static play(name: string | undefined, timing: PlayTiming, easing: Easing, stops: TrackStops<CSSValue | null>): TrackEntryBuilder {
         return new TrackEntryBuilder(name, timing, TrackRun.play(timing.duration, easing, stops.map(value => value ?? placeholder())));
     }
 
-    /**
-     * A repeating sequence's iteration with its children's plays laid out in it, in stacking order, each over the ones before it.
-     * A child that starts within the ones before it takes a missing start from them there.
-     * One that starts where they end, or later, follows them, their end value held until then: its missing start takes their end value,
-     * or, when theirs is missing too, both are the current value.
-     * A missing end takes the value of the ones before it there when it ends within them; otherwise, the start of the next child that starts after it.
-     */
-    static merged(name: string | undefined, timing: PlayTiming, children: readonly TrackEntryBuilder[]): TrackEntryBuilder {
-        const [first, ...rest] = children.map(child => child.laidOutUntil(timing.start + timing.duration));
-        let iteration = first!;
-        /** The children whose missing end waits for a start, in the order they end. */
-        const pending = isOpen(iteration.endValue) ? [iteration] : [];
-        for (const top of rest) {
-            const follows = top.start >= iteration.end;
-            if (follows && isOpen(top.startValue) && isOpen(iteration.endValue)) {
-                assign(top.startValue, currentValueToken);
-                assign(iteration.endValue, currentValueToken);
-            } else
-                assign(top.startValue, iteration.valueAt(top.start));
-            while (pending[0] && pending[0].end <= top.start) assign(pending.shift()!.endValue, top.startValue);
-
-            if (top.end < iteration.end) assign(top.endValue, iteration.valueAt(top.end));
-            else if (isOpen(top.endValue)) pending.push(top);
-            iteration = follows ? TrackRun.joined([iteration, top]) : iteration.overlaid(top);
-        }
-        return new TrackEntryBuilder(name, timing, iteration.shifted(-timing.start), children);
+    /** A repeating sequence's iteration, its children merged into it, `iteration` after the outermost definition starts. */
+    static merged(name: string | undefined, timing: PlayTiming, iteration: TrackRun<PendingValue>): TrackEntryBuilder {
+        return new TrackEntryBuilder(name, timing, iteration.shifted(-timing.start));
     }
 
     /** When its first play starts. */
@@ -92,9 +63,13 @@ export class TrackEntryBuilder {
         return this.repeatsForever ? Infinity : this.playOf(this.lastPlayIndex).end;
     }
 
-    /** Its copies, then itself over them. */
-    get layers(): TrackEntryBuilder[] {
-        return [...this.copies, this];
+    get repeatsForever(): boolean {
+        return repeatsForever(this.timing);
+    }
+
+    /** Its plays one after another. */
+    get laidOut(): TrackRun<PendingValue> {
+        return TrackRun.joined(Array.from({length: this.lastPlayIndex + 1}, (_, index) => this.playOf(index)));
     }
 
     /** Whether the value it starts on is missing. */
@@ -127,9 +102,9 @@ export class TrackEntryBuilder {
         assign(this.endValue, currentValueToken);
     }
 
-    /** Leaves it out of the track: it never shows. */
-    hide(): void {
-        this.hidden = true;
+    /** The same play with the same values, played once. */
+    playedOnce(): TrackEntryBuilder {
+        return new TrackEntryBuilder(this.name, {...this.timing, repeatOptions: {}}, this.play);
     }
 
     /** Makes it hold the value it starts on before it starts. */
@@ -142,21 +117,14 @@ export class TrackEntryBuilder {
         this.holdsAfter = true;
     }
 
-    /** The track entry, none when it's hidden: its play as its keyed run, each placeholder with its value, or the property's current value without one, and what it shows before and after it. */
-    build(): TrackEntry | undefined {
-        if (this.hidden) return undefined;
+    /** The track entry: its play as its keyed run, each placeholder with its value, or the property's current value without one, and what it shows before and after it. */
+    build(): TrackEntry {
         const {name, timing: {start, duration}, holdsBefore, holdsAfter} = this;
         const resolvedTokens = new Map<InterpolatedValueToken<PendingValue>, TrackValue>();
         const keyedRun = this.play.map(value => resolvedValueOf(value, resolvedTokens));
         const repeats = this.repeatPattern;
         const postExtrapolation: Extrapolation | undefined = repeats ? {...repeats, holdsAfter} : holdsAfter ? hold : undefined;
         return {name, start, duration, keyedRun, ...(holdsBefore && {preExtrapolation: hold}), ...(postExtrapolation && {postExtrapolation})};
-    }
-
-    /** Whether it has duration and repeats forever. */
-    private get repeatsForever(): boolean {
-        const {duration, repeatOptions} = this.timing;
-        return duration > 0 && repeatOptions.repeat === Infinity;
     }
 
     /** Its repeats after its first play: a loop, or an oscillation that flips in time for `reverse` and in values for `mirror`; none without repeats or duration. */
@@ -192,14 +160,11 @@ export class TrackEntryBuilder {
         const {start, duration, repeatOptions} = this.timing;
         return this.play.iteration(index, duration, repeatOptions).shifted(start);
     }
+}
 
-    /** Its plays one after another; repeating forever, up to `until`. */
-    private laidOutUntil(until: Seconds): TrackRun<PendingValue> {
-        const {start, duration, repeatOptions: {repeatDelay = 0}} = this.timing;
-        const playCount = this.repeatsForever ? Math.ceil((until - start) / (duration + repeatDelay)) : this.lastPlayIndex + 1;
-        const run = TrackRun.joined(Array.from({length: playCount}, (_, index) => this.playOf(index)));
-        return this.repeatsForever ? run.cut(run.start, until) : run;
-    }
+/** Whether it has duration and repeats forever. */
+export function repeatsForever({duration, repeatOptions}: PlayTiming): boolean {
+    return duration > 0 && repeatOptions.repeat === Infinity;
 }
 
 function placeholder(): Placeholder {
@@ -216,7 +181,7 @@ function openPlaceholderOf(value: PendingValue): Placeholder | undefined {
     return value.value === undefined ? value : openPlaceholderOf(value.value);
 }
 
-function isOpen(value: PendingValue): boolean {
+export function isOpen(value: PendingValue): boolean {
     return openPlaceholderOf(value) !== undefined;
 }
 
@@ -224,7 +189,7 @@ function isOpen(value: PendingValue): boolean {
  * Gives `value` to the placeholder without a value that `target` comes to, if there's one.
  * A value made from that placeholder can't be its own, so it stays without one.
  */
-function assign(target: PendingValue, value: PendingValue): void {
+export function assign(target: PendingValue, value: PendingValue): void {
     const open = openPlaceholderOf(target);
     if (open && !isMadeFrom(value, open)) open.value = value;
 }

@@ -3,11 +3,11 @@ import type {RepeatOptions} from "../playback-options.ts";
 import type {EntryPath, Naming} from "../naming.ts";
 import type {TweenStops} from "../tween-stops.ts";
 import type {Seconds} from "../types.ts";
-import {groupBy} from "../utils/collections.ts";
+import {getOrInsert, groupBy, popWhile, shiftWhile} from "../utils/collections.ts";
 import type {AnimationPlan, PlanNode, SequencePlan} from "./plan.ts";
-import {TrackEntryBuilder} from "./track-entry-builder.ts";
-import {type TrackRun, TrackStops} from "./track-runs.ts";
-import type {TrackValue} from "./track-values.ts";
+import {assign, isOpen, type PendingValue, repeatsForever, TrackEntryBuilder} from "./track-entry-builder.ts";
+import {TrackRun, TrackStops} from "./track-runs.ts";
+import {currentValueToken, type TrackValue} from "./track-values.ts";
 
 /** A sequence that entries are in: where it starts, how long an iteration of it lasts, and how it repeats. */
 export interface ParentContext {
@@ -123,45 +123,160 @@ export class TracksResolver {
     }
 
     private trackBuilderOf(target: Element, property: string): TrackBuilder {
-        const buildersByProperty = this.buildersByTarget.get(target) ?? {};
-        this.buildersByTarget.set(target, buildersByProperty);
+        const buildersByProperty = getOrInsert(this.buildersByTarget, target, () => ({}));
         return buildersByProperty[property] ??= new TrackBuilder(this.naming);
     }
 }
 
 /** The entries that animate one property of one target, built into its track once they're all added. */
 class TrackBuilder {
-    /** In stacking order: by when they start, ties in the order they're added. */
-    private readonly entries: TrackBuilderEntry[] = [];
+    /** In the order they're added; an entry already built into a builder is null. */
+    private readonly entries: (TrackBuilderEntry | null)[] = [];
+    /** The indexes of the entries in each outermost repeating sequence, in the order they're added. */
+    private readonly entryIndexesByRepeatingAncestor = new Map<ParentContext, number[]>();
 
     constructor(private readonly naming: Naming) {}
 
-    /** Adds the entry after every entry that starts no later than it. */
     add(entry: Omit<TrackBuilderEntry, 'repeatingAncestors'>): void {
-        const laterIndex = this.entries.findIndex(other => other.start > entry.start);
-        this.entries.splice(laterIndex === -1 ? this.entries.length : laterIndex, 0, {...entry, repeatingAncestors: entry.ancestors.filter(isRepeating)});
+        const repeatingAncestors = entry.ancestors.filter(isRepeating);
+        const [repeatingAncestor] = repeatingAncestors;
+        if (repeatingAncestor) getOrInsert(this.entryIndexesByRepeatingAncestor, repeatingAncestor, () => []).push(this.entries.length);
+        this.entries.push({...entry, repeatingAncestors});
     }
 
     /**
      * Builds a track entry for each entry no sequence around repeats, with its own repeats,
      * and one for each outermost repeating sequence, its entries merged into it, that repeats as the sequence does, over copies of what in it repeats forever.
-     * Then lays them out over each other, and leaves out the ones that never show.
+     * Lays them out over each other in stacking order, in one walk, and leaves out the ones that never show.
+     * - A missing start takes the value of the one under it there. With none under it, it takes the end value of the one that ended last,
+     *   and when that one's end is missing too, both are the current value. With none before it, it's the current value.
+     * - A missing end takes the value of the one under it there that ends after it. With none, it waits for the next one that starts once it has ended, and takes its start.
+     * - The ones under it that end with or before it never show again, and the ones that start with it never show at all.
+     * - It holds after it ends when nothing under it runs on after that, and before it starts when it's among the ones that start first.
+     * - The copies under a merged one have its values, and take none of their own.
      */
     build(): Track {
-        const builders = this.buildersOf(this.entries);
-        layOut(builders);
-        return builders.flatMap(builder => builder.layers).flatMap(builder => builder.build() ?? []);
+        const {entries} = this;
+        const indexesInStackingOrder = Array.from(entries.keys()).sort((first, second) => byStart(entries[first]!, entries[second]!));
+        let firstStart: Seconds | undefined;
+        /** The ones that show at the latest start, each over the ones that end after it. */
+        const runStack: TrackEntryBuilder[] = [];
+        /** The ones whose missing end waits for a start, in the order they end. */
+        const pending: TrackEntryBuilder[] = [];
+        /** The ones that show, in the order they show over each other in. */
+        const shown = new Set<TrackEntryBuilder>();
+        /** Pops the ones that end by `time`, and leaves out the ones among them that start with `builder`. */
+        const popEndedBy = (time: Seconds, builder: TrackEntryBuilder): TrackEntryBuilder[] => {
+            const popped = popWhile(runStack, run => run.end <= time);
+            for (const run of popped.filter(run => run.start === builder.start)) shown.delete(run);
+            return popped;
+        };
+
+        for (const index of indexesInStackingOrder) {
+            const entry = entries[index];
+            if (!entry) continue;
+            const [repeatingAncestor] = entry.repeatingAncestors;
+            const group = repeatingAncestor ? this.takeEntriesAt(this.entryIndexesByRepeatingAncestor.get(repeatingAncestor)!).toSorted(byStart) : [entry];
+            const builders = this.buildersOf(group);
+            const copies = [...builders].filter(([member]) => isContinuedByCopy(member, group)).map(([, copy]) => copy).toSorted(byStart);
+            const builder = builders.get(repeatingAncestor ?? entry)!;
+            firstStart ??= builder.start;
+
+            const previous = popEndedBy(builder.start, builder).at(-1);
+            const under = runStack.at(-1);
+            if (under)
+                builder.assignStartInterpolation(under);
+            else if (previous?.hasOpenEnd && builder.hasOpenStart) {
+                builder.assignStartCurrentValue();
+                previous.assignEndCurrentValue();
+            } else if (previous)
+                builder.assignStartInterpolation(previous);
+            else
+                builder.assignStartCurrentValue();
+
+            for (const ended of shiftWhile(pending, run => run.end <= builder.start))
+                ended.assignEndInterpolation(builder);
+
+            runStack.push(...copies);
+            popEndedBy(builder.end, builder);
+            const landing = runStack.at(-1);
+            if (landing)
+                builder.assignEndInterpolation(landing);
+            else {
+                builder.holdAfter();
+                if (builder.hasOpenEnd)
+                    pending.push(builder);
+            }
+            if (builder.start === firstStart)
+                builder.holdBefore();
+
+            runStack.push(builder);
+            for (const copy of copies) shown.add(copy);
+            shown.add(builder);
+        }
+        return [...shown].map(builder => builder.build());
+    }
+
+    /** Takes the entries at the indexes out of the entries, leaving null in their place. */
+    private takeEntriesAt(indexes: readonly number[]): TrackBuilderEntry[] {
+        const taken = indexes.map(index => this.entries[index]!);
+        for (const index of indexes) this.entries[index] = null;
+        return taken;
+    }
+
+    /** The builder of an entry's play, with its own repeats. */
+    private playOf(entry: TrackBuilderEntry): TrackEntryBuilder {
+        return TrackEntryBuilder.play(this.naming.trackEntryNameOf(entry.path), entry, entry.easing, new TrackStops(entry.stops.stops));
+    }
+
+    /** The builders of the entries, in stacking order, and of each repeating sequence they're in, the innermost ones first. */
+    private buildersOf(entries: readonly TrackBuilderEntry[]): Map<TrackBuilderEntry | ParentContext, TrackEntryBuilder> {
+        const builders = new Map<TrackBuilderEntry | ParentContext, TrackEntryBuilder>(entries.map(entry => [entry, this.playOf(entry)]));
+        for (let depth = Math.max(...entries.map(entry => entry.repeatingAncestors.length)) - 1; depth >= 0; depth--) {
+            const entriesInSequences = entries.filter(entry => depth < entry.repeatingAncestors.length);
+            for (const [sequence, sequenceEntries] of groupBy(entriesInSequences, entry => entry.repeatingAncestors[depth]!))
+                builders.set(sequence, this.mergedOf(sequence, sequenceEntries, builders, depth));
+        }
+        return builders;
     }
 
     /**
-     * The builders of the entries, in stacking order: one for each entry without a repeating ancestor at `depth`,
-     * and one for each repeating ancestor at `depth`, where its first entry is, with its entries merged into it.
+     * The builder of a repeating sequence's iteration, which repeats as the sequence does, with its children's builders, in stacking order, merged into it:
+     * each entry `depth` repeating sequences in, and each repeating sequence `depth + 1` in, where its first entry is.
+     * A child that repeats forever plays once in it.
      */
-    private buildersOf(entries: readonly TrackBuilderEntry[], depth: number = 0): TrackEntryBuilder[] {
-        return [...groupBy(entries, entry => entry.repeatingAncestors[depth] ?? entry)].map(([key, group]) => isTrackBuilderEntry(key)
-            ? TrackEntryBuilder.play(this.naming.trackEntryNameOf(key.path), key, key.easing, new TrackStops(key.stops.stops))
-            : TrackEntryBuilder.merged(this.nameOf(pathsOf(group)), key, this.buildersOf(group, depth + 1))
-        );
+    private mergedOf(sequence: ParentContext, entries: readonly TrackBuilderEntry[], builders: ReadonlyMap<TrackBuilderEntry | ParentContext, TrackEntryBuilder>, depth: number): TrackEntryBuilder {
+        const children = [...new Set(entries.map(entry => entry.repeatingAncestors[depth + 1] ?? entry))].map(child => builders.get(child)!);
+        const iteration = this.mergedIterationOf(children.map(child => child.repeatsForever ? child.playedOnce() : child));
+        return TrackEntryBuilder.merged(this.nameOf(pathsOf(entries)), sequence, iteration);
+    }
+
+    /**
+     * The children's plays laid out in one iteration, in stacking order, each over the ones before it.
+     * A child that starts within the ones before it takes a missing start from them there.
+     * One that starts where they end, or later, follows them, their end value held until then: its missing start takes their end value,
+     * or, when theirs is missing too, both are the current value.
+     * A missing end takes the value of the ones before it there when it ends within them; otherwise, the start of the next child that starts after it.
+     */
+    private mergedIterationOf(children: readonly TrackEntryBuilder[]): TrackRun<PendingValue> {
+        const [first, ...rest] = children.map(child => child.laidOut);
+        let iteration = first!;
+        /** The children whose missing end waits for a start, in the order they end. */
+        const pending = isOpen(iteration.endValue) ? [iteration] : [];
+        for (const top of rest) {
+            const follows = top.start >= iteration.end;
+            if (follows && isOpen(top.startValue) && isOpen(iteration.endValue)) {
+                assign(top.startValue, currentValueToken);
+                assign(iteration.endValue, currentValueToken);
+            } else
+                assign(top.startValue, iteration.valueAt(top.start));
+            for (const ended of shiftWhile(pending, child => child.end <= top.start)) assign(ended.endValue, top.startValue);
+
+            if (top.end < iteration.end) assign(top.endValue, iteration.valueAt(top.end));
+            else if (isOpen(top.endValue)) pending.push(top);
+            iteration = follows ? TrackRun.joined([iteration, top]) : iteration.overlaid(top);
+        }
+        return iteration;
     }
 
     /** The name of a track entry that plays the animation leaves at the paths. */
@@ -170,54 +285,21 @@ class TrackBuilder {
     }
 }
 
-/**
- * Lays the builders out over each other in stacking order, each one's copies under it, in one walk.
- * - A missing start takes the value of the one under it there. With none under it, it takes the end value of the one that ended last,
- *   and when that one's end is missing too, both are the current value. With none before it, it's the current value.
- * - A missing end takes the value of the one under it there that ends after it. With none, it waits for the next one that starts once it has ended, and takes its start.
- * - The ones under it that end with or before it never show again, and the ones that start with it never show at all.
- * - It holds after it ends when nothing under it runs on after that, and before it starts when it's among the ones that start first.
- * - The copies under a merged one have its values, and take none of their own.
- */
-function layOut(builders: readonly TrackEntryBuilder[]): void {
-    const firstStart = builders[0]?.start;
-    /** The ones that show at the latest start, each over the ones that end after it. */
-    const shown: TrackEntryBuilder[] = [];
-    /** The ones whose missing end waits for a start, in the order they end. */
-    const pending: TrackEntryBuilder[] = [];
-    /** Takes the ones that end by `time` off `shown`, hides those that start with `over`, and gives the last one it took. */
-    function takeEndedBy(time: Seconds, over: TrackEntryBuilder): TrackEntryBuilder | undefined {
-        let taken: TrackEntryBuilder | undefined;
-        while (shown.length > 0 && shown.at(-1)!.end <= time) {
-            taken = shown.pop()!;
-            if (taken.start === over.start) taken.hide();
-        }
-        return taken;
-    }
+function byStart(first: { start: Seconds }, second: { start: Seconds }): number {
+    return first.start - second.start;
+}
 
-    for (const builder of builders) {
-        const previous = takeEndedBy(builder.start, builder);
-        const under = shown.at(-1);
-        if (under) builder.assignStartInterpolation(under);
-        else if (previous?.hasOpenEnd && builder.hasOpenStart) {
-            builder.assignStartCurrentValue();
-            previous.assignEndCurrentValue();
-        } else if (previous) builder.assignStartInterpolation(previous);
-        else builder.assignStartCurrentValue();
-        while (pending[0] && pending[0].end <= builder.start) pending.shift()!.assignEndInterpolation(builder);
+/** Whether the entry or the repeating sequence repeats forever in repeating sequences that don't, so it goes on under them, as a copy, once they end. */
+function isContinuedByCopy(member: TrackBuilderEntry | ParentContext, entries: readonly TrackBuilderEntry[]): boolean {
+    const repeatingAncestors = repeatingAncestorsOf(member, entries);
+    return repeatingAncestors.length > 0 && repeatsForever(member) && !repeatingAncestors.some(repeatsForever);
+}
 
-        for (const layer of builder.layers) {
-            takeEndedBy(layer.end, layer);
-            const landing = shown.at(-1);
-            if (landing) layer.assignEndInterpolation(landing);
-            else {
-                layer.holdAfter();
-                if (layer.hasOpenEnd) pending.push(layer);
-            }
-            if (layer.start === firstStart) layer.holdBefore();
-            shown.push(layer);
-        }
-    }
+/** The repeating sequences around the entry, or around the repeating sequence the entries are in, the outermost first. */
+function repeatingAncestorsOf(member: TrackBuilderEntry | ParentContext, entries: readonly TrackBuilderEntry[]): readonly ParentContext[] {
+    if (isTrackBuilderEntry(member)) return member.repeatingAncestors;
+    const {repeatingAncestors} = entries.find(entry => entry.repeatingAncestors.includes(member))!;
+    return repeatingAncestors.slice(0, repeatingAncestors.indexOf(member));
 }
 
 function isRepeating({repeatOptions: {repeat = 0}}: ParentContext): boolean {

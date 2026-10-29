@@ -650,7 +650,7 @@ Every error has the type of what went wrong:
 | `src/utils/environment.ts` | `isProduction`: whether a bundler built it for production, from `process.env.NODE_ENV`; false where `process` doesn't exist |
 | `src/utils/math.ts` | Interpolation and solving monotone functions |
 | `src/utils/records.ts` | Reading numeric-keyed records in order |
-| `src/utils/collections.ts` | `groupBy` |
+| `src/utils/collections.ts` | `groupBy`, `getOrInsert`, `partitionPoint` (binary search for the first item past a point), `popWhile`, `shiftWhile` |
 | `src/resolution/plan.ts` | `plan`, through `AnimationPlanner` and `SequencePlanner`: the plan tree of positions and durations, with each animation's targets and their delays |
 | `src/resolution/stops.ts` | `NumericStops`: one property's values as numbers in one unit, and interpolating them; only the tests use it, as the definitions' own math (§7) |
 | `src/resolution/track-values.ts` | `TrackValue`, and its value tokens `CurrentValueToken` and `InterpolatedValueToken`: a track's values, given or left for the effects stage to work out, `currentValueToken` and `interpolatedValueOf` |
@@ -735,58 +735,105 @@ The anchor duration (§2.7.2) stays in the planners: only placing the entries af
 
 ### 5.4 Tracks
 
-`TracksResolver` (`src/resolution/tracks.ts`) lays every animation leaf out in time, per target and property. It's made with its plan and the `Naming` it names entries by. Its `resolve()` walks the plan into a `TrackBuilder` per target and property, builds them, and gives the `Tracks`, which hold each target's tracks by property in `byTarget`. It knows nothing of the engine: its tracks describe keyed runs and extrapolations, which any engine can play, and the WAAPI side decides how (§5.5).
+`TracksResolver` (`src/resolution/tracks.ts`) lays every animation leaf out in time, per target and property. It knows nothing of the engine: tracks hold keyed runs and extrapolations, and the WAAPI side decides how to play them (§5.5).
 
-**Walking the plan.** A sequence plan gets a `ParentContext`: its `start` after the outermost definition's start, which is the `start` of the sequence around it plus its position there, or its own position for the outermost; its `duration`, one play of it; and its `repeatOptions`, which are empty while sequences don't repeat. The walk passes down the contexts of the sequences around each entry as a list, the outermost first: each subsequence's entries get its context after those of the sequences around it, so the entries of one sequence share one context object. An animation leaf adds an entry to the `TrackBuilder` of each property of each target, holding:
-- its start: the `start` of the sequence it's directly in, or 0 for an animation on its own, plus its position and the target's delay;
-- its play duration, easing and stops;
-- its repeat options;
-- its `ancestors`: the contexts of the sequences around it, the outermost first;
-- its entry path.
+```
+new TracksResolver(plan, naming).resolve()
+├─ 1. Walk the plan     each leaf → an entry in the TrackBuilder of each of its targets × properties
+└─ 2. TrackBuilder.build(), per track
+      ├─ a. Sort          the entries' indexes into stacking order
+      ├─ b. Walk          per index: a builder (playOf, or mergedOf for a repeating sequence) and its copies,
+      │                   then its missing values and holds, and the builders that show, each one's copies under it
+      └─ c. Build         each builder that shows → TrackEntry
+→ Tracks: byTarget, Map<Element, {[property]: Track}>
+```
 
-Entries are added in declaration order.
+**1. Walk the plan.** Entries are added in declaration order. `TrackBuilder.entries` is the only place they're kept, in that order. `entryIndexesByRepeatingAncestor` maps each outermost repeating sequence to the indexes of its entries there, from `add`.
+- Each sequence gets a `ParentContext`:
+  - `start`: the start of the sequence around it plus its position, or its own position for the outermost;
+  - `duration`: one play of it;
+  - `repeatOptions`: empty while sequences don't repeat.
+- Each leaf adds an entry per target and property:
+  - `start`: its sequence's `start` (0 for an animation on its own) + its position + the target's delay;
+  - `duration`, `easing`, `stops` and `repeatOptions`: its own;
+  - `ancestors`: the contexts of the sequences around it, the outermost first. One sequence's entries share one context object;
+  - `repeatingAncestors`: its `ancestors` with `repeat` above 0 (`isRepeating`);
+  - `path`: its entry path.
 
-**Spans and runs** (`src/resolution/track-runs.ts`). A `TrackSpan` is a stretch of one element's property, from `start` to `end`, whose value is its stops' value at `easing.progressAt(x)`. One easing runs through all of a span's stops.
-- **Stops.** A span's stops are `TrackStops`, which take their value type as a parameter: an entry's play holds its `TweenStops`' values as given, and a track entry's keyed run holds `TrackValue`s (§5.2). Between two stops, the value runs linearly with the progress, and past the outer ones it continues the nearest two. `valueAt(progress)` gives a stop's own value at a stop, and otherwise an `InterpolatedValueToken` between the stops around it (`interpolatedValueOf`, which gives an end itself when the factor is 0 or 1, or both ends are the same).
-- **Holds.** A hold is a span with constant stops (`TrackStops.constant`) and a linear easing.
-- **Runs.** A `TrackRun` is spans one after another, and an entry's keyframes are its **keyed run**. `startValue` and `endValue` are the values at its first span's start progress and its last span's end progress (`startValueOf`, `endValueOf`), and `valueAt(time)` is the value at a moment, the next span's start where two meet. `map(transform)` gives the run with each value transformed.
-- `TrackRun.iteration(index, iterationDuration, options)` places a run in an iteration of a repeat. Every other iteration of a reverse or a mirror flips in time: a reverse reverses each span's easing (`Easing.reverse`), and a mirror keeps the easing and reverses the stops (`TrackStops.reverse`).
-- `TrackRun.cut(start, end)` is the part of a run between two times. A span cut through its easing takes the cut easing (`Easing.segment`), whose window only says where the easing is cut. Its stops keep their offsets, and only those between the lowest and the highest progress the cut easing reaches stay. Each progress it starts, turns and ends at gets a stop of the value there, unless it has one (`TrackStops.narrowedTo`). So a cut span ends on its stops, and the value anywhere within it lies on the same lines as before.
-- `TrackRun.overlaid(top)` is the run with `top`'s spans in place of its own for as long as `top` lasts. The cuts around `top` end and resume on the run's own values there.
-- `TrackRun.joined(runs)` lays runs one after another, each one's end value held until the next starts, and `heldUntil(time)` holds a run's end value until then.
+**2a. Sort.** The indexes of `entries` are sorted by their entries' starts (`byStart`), ties in declaration order (the sort is stable). An entry shows over the ones before it, except a merged builder's copies, which go right under it.
 
-**Building a track.** A `TrackBuilder` keeps its entries in stacking order: `add` places each entry after every entry that starts no later than it, so they're sorted by start, ties in declaration order. An entry shows over the ones before it. From when it's added, each entry knows its `repeatingAncestors`: the sequences around it that repeat, the outermost first: its `ancestors` with `repeat` above 0 (`isRepeating`).
+**2b. Walk.** One walk over the sorted indexes, which skips the `null` ones. For each entry, its builder:
+- **Layered**, without a repeating ancestor (an infinite entry included): `playOf`, its play with its own repeats (`TrackEntryBuilder.play`). WAAPI shows a later effect over an earlier one, and the earlier one again once it ends, so these never merge.
+- **Merged**, with one: the entries at its outermost repeating ancestor's indexes are taken out of `entries`, `null` left in their place (`takeEntriesAt`), and sorted by start. `buildersOf` builds them all up front: each entry's (`playOf`), then each repeating sequence's, grouped by `repeatingAncestors[depth]` (`groupBy`) from the deepest depth out (`mergedOf`, below), in one map keyed by entry or sequence. The outermost sequence's is the merged builder, where its first entry is.
+- **Copies:** the builders, in that map, of the entries and the repeating sequences that repeat forever in repeating sequences that don't (`isContinuedByCopy`, with `repeatingAncestorsOf`), sorted by start. They go on under the merged builder once it ends, and share their plays with the ones merged into it, so they have the same values.
 
-`TrackBuilder.build()`:
-1. **Builders** (`buildersOf`). The entries are grouped by their outermost repeating ancestor, or by themselves when they have none (`groupBy`, `src/utils/collections.ts`). A `Map` keeps its keys in the order their first entries come in, so the groups are in stacking order, each where its first entry is. An entry on its own is **layered**: it gets a builder of its own, its play with its own repeats (`TrackEntryBuilder.play`). WAAPI shows a later effect over an earlier one while it runs, and the earlier one again once it ends, from where it is by then, so layered entries never need merging. A repeating sequence's entries are **merged**: grouped the same way one repeating ancestor further in, and their builders merged into the sequence's (`TrackEntryBuilder.merged`).
-2. **Laying out** (`layOut`), below: missing values, hidden entries, and holds.
-3. **Track entries.** Each builder, with its copies right before it, builds into a track entry, and a hidden one into none (`TrackEntryBuilder.build`).
+Then it lays the builder out over the ones before it. It keeps:
+- `runStack`: the builders that show at the latest start, each over the ones that end after it;
+- `pending`: builders whose missing end waits for a start, in the order they end;
+- `shown`: the builders that show, in the order they show over each other in, which build into the track. A `Set`, so a builder that never shows is deleted from it.
 
-**Entry builders** (`src/resolution/track-entry-builder.ts`). A `TrackEntryBuilder` builds a track entry step by step. It has a name and a `PlayTiming`, and a play, from the timing's start, that repeats as the timing does: an entry's play, or a repeating sequence's iteration.
-- **Placeholders.** Each missing value of an entry's play is a `Placeholder` of its own. Every span that has it, holds, cuts, flipped stops and every repeat included, has the same object, so assigning a value to it sets its `value` in place, and all of them have it. A value read for it may be a placeholder without a value yet, so a placeholder is followed to the one without a value that it comes to (`openPlaceholderOf`). A value made from the placeholder itself, through placeholders or the ends of interpolated values, isn't assigned to it (`isMadeFrom`), so it stays without one.
-- **Reading.** `start` and `end` are when its first play starts and its last one ends, and `end` is `Infinity` when it repeats forever. Its value at a moment is its play's then, held in the pause after it, and the value it starts or ends on before or after its plays. The value it ends on is its last play's, so after an odd number of repeats that flip, it's the start's, and the start's value wins.
-- **Assigning values.** `assignStartInterpolation(other)` and `assignEndInterpolation(other)` give a missing start or end the value `other` has there: a stop's value, or an `InterpolatedValueToken` between stops. `assignStartCurrentValue()` and `assignEndCurrentValue()` give it the `CurrentValueToken`. Each does nothing when the value isn't missing. `hasOpenStart` and `hasOpenEnd` tell whether it is, and an end that never comes isn't.
-- **Showing.** `hide()` leaves it out of the track. `holdBefore()` and `holdAfter()` make it hold the value it starts on before it starts, and the one it ends on after it ends.
-- **Building.** `build()` gives the track entry: its play as the keyed run, with each placeholder's value, and the `CurrentValueToken` for each one without. An interpolated value resolves once, so spans that shared it still do. Its repeats (`repeatPattern`) become a `loop`, or an `oscillate` that flips every other play in `time` for `reverse` or in `values` for `mirror`. `iterations` counts the plays after the first, and `pause` is the repeat delay as a fraction of the duration. An entry without duration has none, so it plays once, whatever its repeats. A held end is a `hold` post-extrapolation, or `holdsAfter` on a repeat extrapolation, and a held start is a `hold` pre-extrapolation.
+For each builder:
+1. **Start.** Pop the ones that ended by its start (`popWhile`). A missing start takes:
+    - the value of the top of `runStack` there;
+    - with none, the end value of the last one popped, or the current value on both when that end is missing too;
+    - with none popped, the current value.
+2. **Waiting ends.** Each one in `pending` that ended by its start (`shiftWhile`) takes its start.
+3. **Copies.** Its copies go onto `runStack`, under it, before its end lands, so its end lands on them, and it doesn't hold after over them.
+4. **End.** Pop the ones that end with or before it: they never show again.
+    - a missing end takes the value of the new top of `runStack` there;
+    - with none, it holds after it ends, and a missing end goes into `pending`.
+5. **Never shown.** A popped one that starts with the one that popped it never shows, so it leaves `shown` (`popEndedBy`).
+6. **Held start.** It holds before it starts when it starts with the first.
+7. **Shown.** It goes onto `runStack`, and into `shown` after its copies.
 
-**Merging** (`TrackEntryBuilder.merged`). A repeating sequence's iteration is one run of its children's builders, each over the ones before it, which only one run can repeat together.
-- **Children.** An entry directly in the sequence is one child. A repeating sequence in it is one child too, where its first entry is: its own children merged first, the same way. Each child's plays are laid out one after another (`laidOutUntil`).
-- **Over the run.** A child that starts before the run so far ends, a shared start included, replaces its spans while it lasts (`TrackRun.overlaid`), and its missing start takes the run's value there.
-- **After the run.** A child that starts where the run ends, or later, follows it, the run's end value held until then (`TrackRun.joined`). Its missing start takes the run's end value, and when that's missing too, both are the current value.
-- **Ends.** A missing end before the run's end takes the run's value there. Otherwise it waits, in the order the ends come, for the next child that starts once it has ended, and takes that child's start. One still waiting once the iteration is merged is the current value, unless it's the iteration's end, which the layout gives a value.
-- **Repeating forever.** A child that repeats forever plays until the iteration ends, its last play cut there. It also continues on its own, as one of the merged builder's `copies`: the same builder, so it has the same values. There are no copies when the sequence, or one around it, repeats forever too, and so covers them forever.
-- **The merged builder** starts where its first child does, and its timing is the sequence's, so it repeats as the sequence does. Its `layers` are its copies, then itself over them.
+Copies take no values in the walk: theirs come from the merge, and they never hold before. An end still waiting after the walk is the current value, as is the end of one that repeats forever.
 
-**Laying out** (`layOut`). The builders are laid out over each other in one walk, in stacking order, each one's copies under it. The walk keeps the builders that show (`shown`), each over the ones that end after it, and the ones whose missing end waits for a start (`pending`), in the order they end.
-- **Start.** The ones that have ended by a builder's start leave `shown`. A missing start takes the value of the one under it there, the top of `shown`, a shared start included. With none under it, it takes the end value of the one that ended last, and when that one's end is missing too, both are the current value. With none before it, it's the current value.
-- **Waiting ends.** Each waiting end that has ended by the builder's start takes its start.
-- **End.** The ones that end with or before its end leave `shown`: they never show again. A missing end takes the value of the one it lands on, the new top of `shown`. With none, it waits.
-- **Hidden.** One that leaves `shown` for one that starts with it never shows at all, so it's hidden. An entry starts showing when its play starts.
-- **Holds.** It holds after it ends when it lands on none, so nothing under it runs on after that. It holds before it starts when it starts with the first.
-- **Copies** go into `shown` with their builder, under it, and take no values of their own: they have the merged builder's. Nothing ends after them, so nothing under them shows again, and the merged builder doesn't hold after it ends over a copy that runs on.
-- An end still waiting after the walk is the current value, and so is the end of one that repeats forever.
+**Merging** (`TrackBuilder.mergedOf(sequence, entries, builders, depth)`, `mergedIterationOf`). The sequence's iteration is one run of its children, each over the ones before it, since only one run can repeat them together.
+- **Children:** the keys `repeatingAncestors[depth + 1]`, or the entry itself without one, each where its first entry is, with their builders from the map: each entry directly in it, and each repeating sequence in it, merged already. Each child's plays are laid out one after another (`laidOut`).
+- For each child after the first, against the run so far:
+    - **Starts before the run ends** (a shared start included): it replaces the run's spans while it lasts (`TrackRun.overlaid`). A missing start takes the run's value there.
+    - **Starts at or after the run's end:** it follows, with the run's end value held until then (`TrackRun.joined`). A missing start takes the run's end value, or the current value on both when that's missing too.
+    - **Waiting ends** that ended by its start take its start.
+    - **Ends before the run's end:** a missing end takes the run's value there. Otherwise it waits.
+- An end still waiting after the merge is the current value, except the iteration's end, which the walk fills.
+- **Repeating forever:** a child plays once in the iteration (`playedOnce`). A finitely repeating child plays all its repeats in it.
+- **Result:** `TrackEntryBuilder.merged(name, timing, iteration)`, which starts where its first child does, and repeats with the sequence's timing.
 
-**Track entries.** A `Track` is its entries in stacking order, with a merged entry's copies right under it.
+**Entry builders** (`TrackEntryBuilder`, `src/resolution/track-entry-builder.ts`). Each has a name, a `PlayTiming`, and a play from the timing's start: an entry's play, or a repeating sequence's iteration.
+
+| Part | What it does |
+|---|---|
+| Placeholders | Each missing value is a `Placeholder`, the same object in every span that has it (holds, cuts, flipped stops, repeats), so assigning it sets it everywhere. `openPlaceholderOf` follows one placeholder to the one it comes to. `isMadeFrom` refuses a value made from the placeholder itself, which then stays missing |
+| `start`, `end` | When its first play starts and its last one ends. `end` is `Infinity` when it repeats forever |
+| `valueAt(time)` | Its play's value then, held in the pause after each play, and its start or end value outside its plays. Its end value is its last play's, so after an odd number of flips, it's the start's |
+| `assignStartInterpolation(other)`, `assignEndInterpolation(other)` | A missing start or end takes `other`'s value there: a stop's value, or an `InterpolatedValueToken` |
+| `assignStartCurrentValue()`, `assignEndCurrentValue()` | A missing start or end takes the `CurrentValueToken` |
+| `hasOpenStart`, `hasOpenEnd` | Whether the value is missing. An end that never comes isn't |
+| `repeatsForever` | Whether it has duration and repeats forever (`repeatsForever(timing)`, which `isContinuedByCopy` uses too) |
+| `laidOut` | Its plays one after another |
+| `playedOnce()` | The same play, with the same placeholders, without repeats |
+| `holdBefore()`, `holdAfter()` | Makes it hold its start value before it, or its end value after it |
+| `build()` | The track entry. Each placeholder becomes its value, or the `CurrentValueToken` without one, and an interpolated value is resolved once. Repeats (`repeatPattern`) become a `loop`, or an `oscillate` that flips in `time` for `reverse` or in `values` for `mirror`: `iterations` are the plays after the first, and `pause` is the repeat delay over the duration. An entry without duration plays once. Holds become `hold` extrapolations, or `holdsAfter` on a repeat |
+
+The assigning methods do nothing when the value isn't missing.
+
+**Spans and runs** (`src/resolution/track-runs.ts`).
+
+| Part | What it is |
+|---|---|
+| `TrackStops<Value>` | Values at progress offsets: linear between two stops, continuing the nearest two past the outer ones. `valueAt(progress)` gives a stop's own value at a stop, and otherwise an `InterpolatedValueToken` (`interpolatedValueOf`, which gives an end itself at a factor of 0 or 1, or when both ends are the same). A play holds `TweenStops` values as given, and a keyed run holds `TrackValue`s (§5.2) |
+| `TrackSpan` | `start` to `end`, valued at `stops.valueAt(easing.progressAt(x))`. One easing runs through all its stops |
+| Hold | A span with `TrackStops.constant` and a linear easing |
+| `TrackRun` | Spans one after another. An entry's keyframes are its **keyed run** |
+| `startValue`, `endValue` | At the first span's start progress and the last span's end progress (`startValueOf`, `endValueOf`) |
+| `valueAt(time)` | The value then: the next span's start where two meet |
+| `map(transform)` | The run with each value transformed |
+| `iteration(index, iterationDuration, options)` | The run in that iteration of a repeat. Every other iteration of a `reverse` reverses each easing (`Easing.reverse`), and of a `mirror` reverses the stops (`TrackStops.reverse`) |
+| `cut(start, end)` | The run between two times. A cut span gets the cut easing (`Easing.segment`), and keeps its stops between the lowest and highest progress that easing reaches, with a stop added where it starts, turns and ends (`TrackStops.narrowedTo`). Values stay on the same lines |
+| `overlaid(top)` | The run with `top`'s spans in place of its own while `top` lasts |
+| `joined(runs)`, `heldUntil(time)` | Runs one after another, each end value held until the next starts, or until `time` |
+
+**Track entries.** A `Track` is its entries in stacking order.
 
 | Field | Meaning |
 |---|---|
@@ -895,7 +942,7 @@ For each target, property and effect, in order, the adapter calls `element.anima
 | Constructors validate and clamp | Every way of making a definition is checked, not only the factories |
 | Tracks per target and property | WAAPI stacks effects per property, and units differ between entries |
 | Overlapping entries layer, stacked by start, and only a repeating sequence's entries merge | WAAPI already shows the earlier effect again, from where it is, once the later one ends. A repeat plays everything in it again together, which only one run can |
-| Entries take missing values from the ones around them, and find what's hidden and what holds, in one walk, through placeholders set in place | Each entry is read once, in stacking order, and every span that has a placeholder gets its value at once |
+| Entries take missing values from the ones around them, and find what never shows and what holds, in one walk, through placeholders set in place | Each entry is read once, in stacking order, and every span that has a placeholder gets its value at once |
 | A missing end with nothing under it takes the start of the next run that starts after it | That's what shows next |
 | Keyframe easings lead to the next keyframe | It's WAAPI's own model |
 | Steps split into `linear()` windows, not hold-and-jump keyframes | Exact, and no extra keyframes |

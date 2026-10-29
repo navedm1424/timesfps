@@ -2,7 +2,8 @@ import type {Easing} from "../easing.ts";
 import {linear} from "../easing-specifier.ts";
 import type {Progress, Seconds} from "../types.ts";
 import type {RepeatOptions} from "../playback-options.ts";
-import {invLerp} from "../utils/math.ts";
+import {partitionPoint} from "../utils/collections.ts";
+import {clamp, invLerp} from "../utils/math.ts";
 import {type InterpolatedValueToken, interpolatedValueOf} from "./track-values.ts";
 
 export interface TrackStop<Value> {
@@ -22,12 +23,12 @@ export class TrackStops<Value> {
     /** The stop's own value at a stop; otherwise the value between the stops around the progress, or between the nearest two past either end. */
     valueAt(progress: Progress): Value | InterpolatedValueToken<Value> {
         const {stops} = this;
-        const stop = stops.find(stop => stop.offset === progress);
-        if (stop) return stop.value;
+        const atOrAfterIndex = partitionPoint(stops, stop => stop.offset >= progress);
+        const stopThere = stops[atOrAfterIndex];
+        if (stopThere?.offset === progress) return stopThere.value;
         if (stops.length === 1) return stops[0]!.value;
 
-        const nextIndex = stops.findIndex(stop => stop.offset > progress);
-        const endIndex = nextIndex === -1 ? stops.length - 1 : Math.max(nextIndex, 1);
+        const endIndex = clamp(atOrAfterIndex, 1, stops.length - 1);
         const start = stops[endIndex - 1]!;
         const end = stops[endIndex]!;
         return interpolatedValueOf(start.value, end.value, invLerp(start.offset, end.offset, progress));
