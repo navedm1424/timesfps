@@ -63,10 +63,6 @@ export class TrackEntryBuilder {
         return this.repeatsForever ? Infinity : this.playOf(this.lastPlayIndex).end;
     }
 
-    get repeatsForever(): boolean {
-        return repeatsForever(this.timing);
-    }
-
     /** Its plays one after another. */
     get laidOut(): TrackRun<PendingValue> {
         return TrackRun.joined(Array.from({length: this.lastPlayIndex + 1}, (_, index) => this.playOf(index)));
@@ -82,29 +78,26 @@ export class TrackEntryBuilder {
         return !this.repeatsForever && isOpen(this.endValue);
     }
 
-    /** Gives a missing start the value `other` has there. */
-    assignStartInterpolation(other: TrackEntryBuilder): void {
-        assign(this.play.startValue, other.valueAt(this.start));
+    /** The value its last play ends on. */
+    get endValue(): PendingValue {
+        return this.playOf(this.lastPlayIndex).endValue;
     }
 
-    /** Gives a missing end the value `other` has there. */
-    assignEndInterpolation(other: TrackEntryBuilder): void {
-        assign(this.endValue, other.valueAt(this.end));
+    /** The value at `time`: its play's then, held in the pause after it, and the value it starts on before it, or ends on after it. */
+    valueAt(time: Seconds): PendingValue {
+        const {start, duration, repeatOptions: {repeatDelay = 0}} = this.timing;
+        const index = duration === 0 ? 0 : clamp(Math.floor((time - start) / (duration + repeatDelay)), 0, this.lastPlayIndex);
+        return this.playOf(index).valueAt(time);
     }
 
-    /** Gives a missing start the property's current value. */
-    assignStartCurrentValue(): void {
-        assign(this.play.startValue, currentValueToken);
+    /** Gives a missing start `value`. */
+    assignStart(value: PendingValue): void {
+        assign(this.play.startValue, value);
     }
 
-    /** Gives a missing end the property's current value. */
-    assignEndCurrentValue(): void {
-        assign(this.endValue, currentValueToken);
-    }
-
-    /** The same play with the same values, played once. */
-    playedOnce(): TrackEntryBuilder {
-        return new TrackEntryBuilder(this.name, {...this.timing, repeatOptions: {}}, this.play);
+    /** Gives a missing end `value`. */
+    assignEnd(value: PendingValue): void {
+        assign(this.endValue, value);
     }
 
     /** Makes it hold the value it starts on before it starts. */
@@ -127,6 +120,10 @@ export class TrackEntryBuilder {
         return {name, start, duration, keyedRun, ...(holdsBefore && {preExtrapolation: hold}), ...(postExtrapolation && {postExtrapolation})};
     }
 
+    private get repeatsForever(): boolean {
+        return repeatsForever(this.timing);
+    }
+
     /** Its repeats after its first play: a loop, or an oscillation that flips in time for `reverse` and in values for `mirror`; none without repeats or duration. */
     private get repeatPattern(): RepeatPattern | undefined {
         const {duration, repeatOptions: {repeat = 0, repeatDelay = 0, repeatMode = 'loop'}} = this.timing;
@@ -137,22 +134,10 @@ export class TrackEntryBuilder {
             : {type: 'oscillate', ...repeating, flip: repeatMode === 'reverse' ? 'time' : 'values'};
     }
 
-    /** The value its last play ends on. */
-    private get endValue(): PendingValue {
-        return this.playOf(this.lastPlayIndex).endValue;
-    }
-
     /** The index of its last play: 0 without duration, and `Infinity` when it repeats forever. */
     private get lastPlayIndex(): number {
         const {duration, repeatOptions: {repeat = 0}} = this.timing;
         return duration === 0 ? 0 : repeat;
-    }
-
-    /** The value at `time`: its play's then, held in the pause after it, and the value it starts on before it, or ends on after it. */
-    private valueAt(time: Seconds): PendingValue {
-        const {start, duration, repeatOptions: {repeatDelay = 0}} = this.timing;
-        const index = duration === 0 ? 0 : clamp(Math.floor((time - start) / (duration + repeatDelay)), 0, this.lastPlayIndex);
-        return this.playOf(index).valueAt(time);
     }
 
     /** Its play at `index`, from the timing's start. */

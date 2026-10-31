@@ -10,6 +10,17 @@ export function groupBy<Item, Key>(items: Iterable<Item>, keyOf: (item: Item) =>
     return groups;
 }
 
+/** The items `matches` holds for, and the rest, each in their order. */
+export function partition<Item>(items: Iterable<Item>, matches: (item: Item) => boolean): [Item[], Item[]] {
+    const matching: Item[] = [];
+    const rest: Item[] = [];
+    for (const item of items) {
+        if (matches(item)) matching.push(item);
+        else rest.push(item);
+    }
+    return [matching, rest];
+}
+
 /** The map's value for `key`, set to `createValue()` first when it has none. */
 export function getOrInsert<Key, Value>(map: Map<Key, Value>, key: Key, createValue: () => NoInfer<Value>): Value {
     if (!map.has(key)) map.set(key, createValue());
