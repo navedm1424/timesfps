@@ -3,7 +3,7 @@ import type {RepeatOptions} from "../playback-options.ts";
 import type {EntryPath, Naming} from "../naming.ts";
 import type {TweenStops} from "../tween-stops.ts";
 import type {Seconds} from "../types.ts";
-import {getOrInsert, groupBy, popWhile, shiftWhile} from "../utils/collections.ts";
+import {getOrInsert, groupBy, shiftWhile} from "../utils/collections.ts";
 import type {AnimationPlan, PlanNode, SequencePlan} from "./plan.ts";
 import {
     assign,
@@ -11,7 +11,8 @@ import {
     type PendingValue,
     type PlayTiming,
     repeatsForever,
-    TrackEntryBuilder
+    TrackEntryBuilder,
+    TrackLayering
 } from "./track-entry-builder.ts";
 import {TrackRun, TrackStops} from "./track-runs.ts";
 import {currentValueToken, type TrackValue} from "./track-values.ts";
@@ -155,28 +156,10 @@ class TrackBuilder {
     /**
      * Builds a track entry for each entry no sequence around repeats, with its own repeats,
      * and one for each outermost repeating sequence, its entries merged into it, that repeats as the sequence does, over copies of what in it repeats forever.
-     * Lays them out over each other in stacking order, in one walk, and leaves out the ones that never show.
-     * - A missing start takes the value of the one under it there. With none under it, it takes the end value of the one that ended last,
-     *   and when that one's end is missing too, both are the current value. With none before it, it's the current value.
-     * - A missing end takes the value of the one under it there that ends after it. With none, it waits for the next one that starts once it has ended, and takes its start.
-     * - The ones under it that end with or before it never show again, and the ones that start with it never show at all.
-     * - It holds after it ends when nothing under it runs on after that, and before it starts when it's among the ones that start first.
-     * - The copies under a merged one take their missing starts as it does, each at its own start.
+     * Lays them out over each other by when they start, then in the order they're declared, each merged one's copies right under it (`TrackLayering`).
      */
     build(): Track {
-        let firstStart: Seconds | undefined;
-        /** The ones that show at the latest start, each over the ones that end after it. */
-        const runStack: TrackEntryBuilder[] = [];
-        /** The ones whose missing end waits for a start, in the order they end. */
-        const pending: TrackEntryBuilder[] = [];
-        /** The ones that show, in the order they show over each other in. */
-        const shown = new Set<TrackEntryBuilder>();
-
-        function resolvePendingEndValues(run: TrackEntryBuilder) {
-            for (const ended of shiftWhile(pending, pendingRun => pendingRun.end <= run.start))
-                ended.assignEnd(run.valueAt(run.start));
-        }
-
+        const layering = new TrackLayering();
         this.forEachEntry(entry => {
             const [repeatingAncestor] = entry.repeatingAncestors;
             const group = repeatingAncestor ? this.takeEntriesAt(this.entryIndexesByRepeatingAncestor.get(repeatingAncestor)!).toSorted(byStart) : [];
@@ -192,57 +175,10 @@ class TrackBuilder {
                 : this.repeatedIterationOf(member, group.filter(groupEntry => groupEntry.repeatingAncestors.includes(member)))
             ).toSorted(byStart);
 
-            firstStart ??= builder.start;
-
-            const previous = popWhile(runStack, run => run.end <= builder.start).at(-1);
-            const under = runStack.at(-1);
-            if (under)
-                builder.assignStart(under.valueAt(builder.start));
-            else if (previous?.hasOpenEnd && builder.hasOpenStart) {
-                builder.assignStart(currentValueToken);
-                previous.assignEnd(currentValueToken);
-            } else
-                builder.assignStart(previous?.endValue ?? currentValueToken);
-
-            resolvePendingEndValues(builder);
-
-            const covered = popWhile(runStack, run => run.end <= builder.end);
-            for (const run of covered) {
-                if (run.start === builder.start)
-                    shown.delete(run);
-            }
-
-            let copyBefore: TrackEntryBuilder | undefined;
-            for (const copy of copies) {
-                const previousToCopy = shiftWhile(covered, run => run.end <= copy.start).at(-1) ?? previous;
-                const underCopy = copyBefore ?? covered.at(0) ?? runStack.at(-1);
-                if (underCopy)
-                    copy.assignStart(underCopy.valueAt(copy.start));
-                else if (previousToCopy?.hasOpenEnd && copy.hasOpenStart) {
-                    copy.assignStart(currentValueToken);
-                    previousToCopy.assignEnd(currentValueToken);
-                } else
-                    copy.assignStart(previousToCopy?.endValue ?? currentValueToken);
-                resolvePendingEndValues(copy);
-                runStack.push(copy);
-                copyBefore = copy;
-            }
-            const landing = runStack.at(-1);
-            if (landing)
-                builder.assignEnd(landing.valueAt(builder.end));
-            else {
-                builder.holdAfter();
-                if (builder.hasOpenEnd)
-                    pending.push(builder);
-            }
-            if (builder.start === firstStart)
-                builder.holdBefore();
-
-            runStack.push(builder);
-            for (const copy of copies) shown.add(copy);
-            shown.add(builder);
+            for (const copy of copies) layering.add(copy);
+            layering.add(builder);
         });
-        return [...shown].map(builder => builder.build());
+        return layering.build();
     }
 
     private forEachEntry(callback: (entry: TrackBuilderEntry) => void): void {

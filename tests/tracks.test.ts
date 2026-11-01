@@ -263,7 +263,7 @@ describe("NativeEffectsResolver plans", () => {
 
     it("loops forever as [original+hold] × ∞", () => {
         expect(repeats({repeat: Infinity, repeatMode: 'loop'}).map(timingOf))
-            .toEqual([{delay: 0, duration: 1.5, iterations: Infinity, direction: 'normal', fill: 'both'}]);
+            .toEqual([{delay: 0, duration: 1.5, iterations: Infinity, direction: 'normal', fill: 'backwards'}]);
     });
 
     it("mirrors an odd play count as [original+hold, backward+hold] × repeatCount/2, then original on its own", () => {
@@ -291,7 +291,7 @@ describe("NativeEffectsResolver plans", () => {
 
     it("mirrors forever as [original+hold, backward+hold] × ∞", () => {
         expect(repeats({repeat: Infinity, repeatMode: 'mirror'}).map(timingOf))
-            .toEqual([{delay: 0, duration: 3, iterations: Infinity, direction: 'normal', fill: 'both'}]);
+            .toEqual([{delay: 0, duration: 3, iterations: Infinity, direction: 'normal', fill: 'backwards'}]);
     });
 
     it("puts each keyframe's easing on the way to the next one", () => {
@@ -448,7 +448,7 @@ describe("NativeEffectsResolver sequences", () => {
             .build();
         const effects = sequenceTracksOf(sequence, {a: line, b: {x: {0: 5, 1: 6}}}).get(element)!.x!;
         expect(effects.map(({name, iterations, fill}) => ({name, iterations, fill})))
-            .toEqual([{name: 'a', iterations: Infinity, fill: 'both'}, {name: 'b', iterations: 1, fill: 'none'}]);
+            .toEqual([{name: 'a', iterations: Infinity, fill: 'backwards'}, {name: 'b', iterations: 1, fill: 'none'}]);
         expect(sample(effects, [2.5, 3.5])).toEqual(closeTo([[5.5, 0.5]])[0]);
     });
 
@@ -512,13 +512,13 @@ describe("NativeEffectsResolver missing values", () => {
         expect(keyframesOf(b!)).toEqual([[0, 0.7], [1, 6]]);
     });
 
-    it("starts an entry from one under it that starts at the same moment, and takes nothing from one that ends at the same moment", () => {
+    it("takes nothing from one under an entry that it hides, from its start to its end", () => {
         const sequence = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 2}), 'a')
             .add(AnimationTiming.of({duration: 2}), 'b', 0)
             .build();
         const effects = sequenceTracksOf(sequence, {a: line, b: {x: {0.5: 6}}}).get(element)!.x!;
-        expect(sample(effects, [0, 2])).toEqual([0, 0.25]);
+        expect(sample(effects, [0, 2])).toEqual([0.25, 0.25]);
     });
 
     it("starts an entry without a value at 0 and nothing before it from the property's current value", () => {

@@ -650,7 +650,7 @@ Every error has the type of what went wrong:
 | `src/utils/environment.ts` | `isProduction`: whether a bundler built it for production, from `process.env.NODE_ENV`; false where `process` doesn't exist |
 | `src/utils/math.ts` | Interpolation and solving monotone functions |
 | `src/utils/records.ts` | Reading numeric-keyed records in order |
-| `src/utils/collections.ts` | `groupBy`, `partition` (the items a predicate holds for, and the rest), `getOrInsert`, `partitionPoint` (binary search for the first item past a point), `popWhile`, `shiftWhile` |
+| `src/utils/collections.ts` | `groupBy`, `getOrInsert`, `partitionPoint` (binary search for the first item past a point), `shiftWhile` |
 | `src/resolution/plan.ts` | `plan`, through `AnimationPlanner` and `SequencePlanner`: the plan tree of positions and durations, with each animation's targets and their delays |
 | `src/resolution/stops.ts` | `NumericStops`: one property's values as numbers in one unit, and interpolating them; only the tests use it, as the definitions' own math (§7) |
 | `src/resolution/track-values.ts` | `TrackValue`, and its value tokens `CurrentValueToken` and `InterpolatedValueToken`: a track's values, given or left for the effects stage to work out, `currentValueToken` and `interpolatedValueOf` |
@@ -741,10 +741,10 @@ The anchor duration (§2.7.2) stays in the planners: only placing the entries af
 new TracksResolver(plan, naming).resolve()
 ├─ 1. Walk the plan     each leaf → an entry in the TrackBuilder of each of its targets × properties
 └─ 2. TrackBuilder.build(), per track
-      ├─ a. Sort          the entries' indexes into stacking order
-      ├─ b. Walk          per index: a builder (playOf, or a repeating sequence's iteration unwrapped) and its copies,
-      │                   then its missing values and holds, and the builders that show, each one's copies under it
-      └─ c. Build         each builder that shows → TrackEntry
+      ├─ a. Sort          the entries' indexes by start
+      ├─ b. Build         per index: a builder (playOf, or a repeating sequence's iteration unwrapped) and its copies,
+      │                   added to a TrackLayering, the copies first
+      └─ c. Layer         TrackLayering.build(): missing values and holds, and each builder that shows → TrackEntry
 → Tracks: byTarget, Map<Element, {[property]: Track}>
 ```
 
@@ -760,31 +760,41 @@ new TracksResolver(plan, naming).resolve()
   - `repeatingAncestors`: its `ancestors` with `repeat` above 0 (`isRepeating`);
   - `path`: its entry path.
 
-**2a. Sort.** The indexes of `entries` are sorted by their entries' starts (`byStart`), ties in declaration order (the sort is stable). An entry shows over the ones before it, except a merged builder's copies, which go right under it.
+**2a. Sort.** The indexes of `entries` are sorted by their entries' starts (`byStart`), ties in declaration order (the sort is stable). This is the stacking order: an entry shows over the ones before it, except a merged builder's copies, which go right under it.
 
-**2b. Walk.** One walk over the sorted indexes, which skips the `null` ones. For each entry, its builder:
+**2b. Build.** One pass over the sorted indexes, which skips the `null` ones. For each entry, its builder:
 - **Layered**, without a repeating ancestor (an infinite entry included): `playOf`, its play with its own repeats (`TrackEntryBuilder.play`). WAAPI shows a later effect over an earlier one, and the earlier one again once it ends, so these never merge.
 - **Merged**, with one: the entries at its outermost repeating ancestor's indexes are taken out of `entries`, `null` left in their place (`takeEntriesAt`), and sorted by start. `repeatedIterationOf(sequence, entries, timing = sequence)` unwraps the sequence's iteration from them (`unwrap`, below), and gives it to `TrackEntryBuilder.merged` to repeat as `timing` does, where its first entry is. Sequence copies, and the repeating sequences inside an iteration, are built the same way. A group of one is unwrapped too, so it repeats as its sequences do.
-- **Copies:** for each entry in the group, the outermost of its chain, `[...entry.repeatingAncestors, entry]`, that repeats forever (`repeatsForever`): an entry, or a repeating sequence inside the group's own. Nothing around it repeats forever, so it goes on under the merged builder once that ends. The group's own sequence, or a lone entry, is no copy; duplicates go through a `Set`. An entry's copy is `playOf`, and a sequence's its iteration unwrapped and repeated (`TrackEntryBuilder.merged`): new builders, sorted by start, that take their own values in the walk.
+- **Copies:** for each entry in the group, the outermost of its chain, `[...entry.repeatingAncestors, entry]`, that repeats forever (`repeatsForever`): an entry, or a repeating sequence inside the group's own. Nothing around it repeats forever, so it goes on under the merged builder once that ends. The group's own sequence, or a lone entry, is no copy; duplicates go through a `Set`. An entry's copy is `playOf`, and a sequence's its iteration unwrapped and repeated (`TrackEntryBuilder.merged`): new builders, sorted by start.
 
-Then it lays the builder out over the ones before it. It keeps:
-- `runStack`: the builders that show at the latest start, each over the ones that end after it;
-- `pending`: builders whose missing end waits for a start, in the order they end;
-- `shown`: the builders that show, in the order they show over each other in, which build into the track. A `Set`, so a builder that never shows is deleted from it.
+The copies go into the layering, then the builder, so each one is over the ones before it, and the copies are under their builder.
 
-For each builder:
-1. **Start.** Pop the ones that ended by its start (`popWhile`). A missing start takes (`assignStart`):
-    - the value of the top of `runStack` there;
-    - with none, the end value of the last one popped, or the current value on both when that end is missing too;
-    - with none popped, the current value.
-2. **Waiting ends.** Each one in `pending` that ended by its start (`shiftWhile`) takes its start.
-3. **Covered.** Pop the ones that end with or before it: they never show again. One of them that starts with it never shows at all, so it leaves `shown`.
-4. **Copies.** Each copy shifts the covered ones that ended by its own start off the front of the covered ones, and takes a missing start by the rule in step 1: the last one it shifts is the one that ended last, or else the builder's, and the one under it is the copy before it, or else the first covered one left, which is still running then, or else the top of `runStack`. Copies never end, so the copy before is over every covered one. Each goes onto `runStack`, under the builder, before the builder's end lands, so that end lands on them, and the builder doesn't hold after over them.
-5. **End.** A missing end takes the value of the top of `runStack` there. With none, it holds after it ends, and a missing end goes into `pending`.
-6. **Held start.** It holds before it starts when it starts with the first.
-7. **Shown.** It goes onto `runStack`, and into `shown` after its copies.
+**2c. Layer** (`TrackLayering`, `src/resolution/track-entry-builder.ts`). Lays builders over each other in the order they're added, each over the ones before it. It never sorts and knows nothing of copies, so any order works.
 
-Copies never end, so they take no end, and they never hold before. An end still waiting after the walk is the current value, as is the end of one that repeats forever.
+It keeps:
+- `runs`: the builders in the order they're added. One that never shows becomes `null`, so dropping it doesn't shift the others;
+- `startNeighbors`, `endNeighbors`: each builder whose missing start, or end, lands on none, and its closest neighbor so far. Maps, so a dropped builder's waiting end still takes a value, since others may hold its values;
+- `firstStarting`: the last added of the ones that start first.
+
+A time is **inside** a builder when `start <= time < end`. A builder **covers** one under it when it starts with or before it and ends with or after it.
+
+`add(run)`:
+1. **Scan.** Every builder in `runs`, from the top down:
+    - one it covers becomes `null`: it never shows, and nothing lands on it;
+    - the topmost one its start is inside is its start's landing, and likewise for its end;
+    - the closest one that ends by its start is its start's neighbor, and the closest one that starts once it ends is its end's neighbor, the topmost of ties.
+2. **Waiting ones.** It becomes the neighbor of each waiting builder it's as close to or closer than its neighbor, so the last added of ties wins.
+3. **Start.** A missing start takes its landing's value there (`assignStart`). With none, it waits in `startNeighbors`.
+4. **End.** A missing end takes its landing's value there (`assignEnd`). With none, it holds after it ends, unless it never ends, and a missing end waits in `endNeighbors`.
+5. **First.** It becomes `firstStarting` when it starts with or before it.
+6. It goes onto `runs`.
+
+`build()`:
+1. **Waiting values.** Each waiting start takes its neighbor's end value, and each waiting end its neighbor's start, or the current value without a neighbor. A start and an end both missing that wait for each other stay missing, since `isMadeFrom` refuses the second, and build into the current value.
+2. **Held start.** `firstStarting` holds before it starts.
+3. **Track entries.** The builders left in `runs` build, in the order they were added.
+
+Copies never end, so they take no end and never hold after, like any builder that repeats forever.
 
 **Unwrapping** (`TrackBuilder.unwrap(sequence, entries)`). A repeating sequence's iteration is one run of its children, each over the ones before it, since only one run can repeat them together.
 - **Children:** its entries grouped by the repeating sequence right inside it in their `repeatingAncestors`, or by themselves without one (`groupBy`), each where its first entry is.
@@ -942,7 +952,7 @@ For each target, property and effect, in order, the adapter calls `element.anima
 | Constructors validate and clamp | Every way of making a definition is checked, not only the factories |
 | Tracks per target and property | WAAPI stacks effects per property, and units differ between entries |
 | Overlapping entries layer, stacked by start, and only a repeating sequence's entries merge | WAAPI already shows the earlier effect again, from where it is, once the later one ends. A repeat plays everything in it again together, which only one run can |
-| Entries take missing values from the ones around them, and find what never shows and what holds, in one walk, through placeholders set in place | Each entry is read once, in stacking order, and every span that has a placeholder gets its value at once |
+| Entries take missing values from the ones under them and around them, and find what never shows and what holds, as each one is added to the layering, through placeholders set in place | The layering takes builders in any order, so the stacking order is decided outside it, and every span that has a placeholder gets its value at once |
 | A missing end with nothing under it takes the start of the next run that starts after it | That's what shows next |
 | Keyframe easings lead to the next keyframe | It's WAAPI's own model |
 | Steps split into `linear()` windows, not hold-and-jump keyframes | Exact, and no extra keyframes |

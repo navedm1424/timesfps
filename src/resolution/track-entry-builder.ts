@@ -147,6 +147,84 @@ export class TrackEntryBuilder {
     }
 }
 
+/**
+ * Track entry builders laid over each other in the order they're added, each over the ones before it.
+ * - One that a later one starts with or before, and ends with or after, never shows.
+ * - A missing start or end takes the value of the topmost one under it running there, other than the ones it hides.
+ *   With none, a start takes the end value of the closest one that ends by it, and an end the start of the closest one that starts once it ends,
+ *   the topmost of ties, and when both values are missing, or there's none, they're the current value.
+ * - It holds after it ends when it ends, and its end lands on none under it. The last added of the ones that start first holds before it starts.
+ */
+export class TrackLayering {
+    /** In the order they're added; one that never shows is null. */
+    private readonly runs: (TrackEntryBuilder | null)[] = [];
+    /** Each one whose missing start lands on none, and the closest one that ends by its start. */
+    private readonly startNeighbors = new Map<TrackEntryBuilder, TrackEntryBuilder | undefined>();
+    /** Each one whose missing end lands on none, and the closest one that starts once it ends. */
+    private readonly endNeighbors = new Map<TrackEntryBuilder, TrackEntryBuilder | undefined>();
+    /** The last added of the ones that start first. */
+    private firstStarting: TrackEntryBuilder | undefined;
+
+    add(run: TrackEntryBuilder): void {
+        let startLanding: TrackEntryBuilder | undefined;
+        let endLanding: TrackEntryBuilder | undefined;
+        let startNeighbor: TrackEntryBuilder | undefined;
+        let endNeighbor: TrackEntryBuilder | undefined;
+        for (let index = this.runs.length - 1; index >= 0; index--) {
+            const below = this.runs[index];
+            if (!below)
+                continue;
+            if (run.start <= below.start && below.end <= run.end) {
+                this.runs[index] = null;
+                continue;
+            }
+            if (!startLanding && below.start <= run.start && run.start < below.end)
+                startLanding = below;
+            if (!endLanding && below.start <= run.end && run.end < below.end)
+                endLanding = below;
+            if (below.end <= run.start && (!startNeighbor || below.end > startNeighbor.end))
+                startNeighbor = below;
+            if (below.start >= run.end && (!endNeighbor || below.start < endNeighbor.start))
+                endNeighbor = below;
+        }
+
+        for (const [waiting, neighbor] of this.startNeighbors) {
+            if (run.end <= waiting.start && (!neighbor || run.end >= neighbor.end))
+                this.startNeighbors.set(waiting, run);
+        }
+        for (const [waiting, neighbor] of this.endNeighbors) {
+            if (run.start >= waiting.end && (!neighbor || run.start <= neighbor.start))
+                this.endNeighbors.set(waiting, run);
+        }
+
+        if (startLanding)
+            run.assignStart(startLanding.valueAt(run.start));
+        else if (run.hasOpenStart)
+            this.startNeighbors.set(run, startNeighbor);
+        if (endLanding)
+            run.assignEnd(endLanding.valueAt(run.end));
+        else {
+            if (run.end !== Infinity)
+                run.holdAfter();
+            if (run.hasOpenEnd)
+                this.endNeighbors.set(run, endNeighbor);
+        }
+        if (!this.firstStarting || run.start <= this.firstStarting.start)
+            this.firstStarting = run;
+        this.runs.push(run);
+    }
+
+    /** The track entries of the ones that show, in the order they're added, each missing value that waited for a neighbor taking its value. */
+    build(): TrackEntry[] {
+        for (const [run, neighbor] of this.startNeighbors)
+            run.assignStart(neighbor?.endValue ?? currentValueToken);
+        for (const [run, neighbor] of this.endNeighbors)
+            run.assignEnd(neighbor?.valueAt(neighbor.start) ?? currentValueToken);
+        this.firstStarting?.holdBefore();
+        return this.runs.filter(run => run !== null).map(run => run.build());
+    }
+}
+
 /** Whether it has duration and repeats forever. */
 export function repeatsForever({duration, repeatOptions}: PlayTiming): boolean {
     return duration > 0 && repeatOptions.repeat === Infinity;

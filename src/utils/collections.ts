@@ -10,17 +10,6 @@ export function groupBy<Item, Key>(items: Iterable<Item>, keyOf: (item: Item) =>
     return groups;
 }
 
-/** The items `matches` holds for, and the rest, each in their order. */
-export function partition<Item>(items: Iterable<Item>, matches: (item: Item) => boolean): [Item[], Item[]] {
-    const matching: Item[] = [];
-    const rest: Item[] = [];
-    for (const item of items) {
-        if (matches(item)) matching.push(item);
-        else rest.push(item);
-    }
-    return [matching, rest];
-}
-
 /** The map's value for `key`, set to `createValue()` first when it has none. */
 export function getOrInsert<Key, Value>(map: Map<Key, Value>, key: Key, createValue: () => NoInfer<Value>): Value {
     if (!map.has(key)) map.set(key, createValue());
@@ -40,13 +29,6 @@ export function partitionPoint<Item>(items: readonly Item[], isPast: (item: Item
         else low = middle + 1;
     }
     return low;
-}
-
-/** Pops the items off the top of `stack` while `shouldPop` holds for the top one, and gives them in the order they're popped. */
-export function popWhile<Item>(stack: Item[], shouldPop: (item: Item) => boolean): Item[] {
-    const popped: Item[] = [];
-    while (stack.length > 0 && shouldPop(stack.at(-1)!)) popped.push(stack.pop()!);
-    return popped;
 }
 
 /** Shifts the items off the front of `queue` while `shouldShift` holds for the front one, and gives them in the order they're shifted. */
