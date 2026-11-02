@@ -176,9 +176,7 @@ describe("TweenStops", () => {
 
     it("takes the value underneath for a missing 0 or 1", () => {
         expect(stopsOf({0.5: 1})).toEqual([[0, null], [0.5, 1], [1, null]]);
-        const stops = TweenStops.of('x', {0: 0, 0.5: 1});
-        expect([stops.startValue, stops.endValue]).toEqual([0, null]);
-        expect(TweenStops.of('x', 1).startValue).toBeNull();
+        expect(stopsOf({0: 0, 0.5: 1})).toEqual([[0, 0], [0.5, 1], [1, null]]);
     });
 
     it("keeps null at the ends, leaves it out between them, and rejects stops without values or outside 0–1", () => {
@@ -190,16 +188,12 @@ describe("TweenStops", () => {
         expect(() => stopsOf({1.5: 1})).toThrow(RangeError);
     });
 
-    it("gives the value at an offset only where there's a stop", () => {
-        const stops = TweenStops.of('x', {0.25: '1px', 1: '2px'});
-        expect(stops.get(0.25)).toBe('1px');
-        expect(stops.get(0)).toBeNull();
-        expect(stops.get(0.5)).toBeUndefined();
-    });
-
-    it("reverses into stops at 1 minus each offset, in order", () => {
-        expect(TweenStops.of('x', {0: 0, 0.25: 5, 1: 10}).reverse().stops).toEqual([{offset: 0, value: 10}, {offset: 0.75, value: 5}, {offset: 1, value: 0}]);
-        expect(TweenStops.of('x', 10).reverse().stops).toEqual([{offset: 0, value: 10}, {offset: 1, value: null}]);
+    it("rejects stops that aren't one value, a list of values or values keyed by progress, and values that aren't numbers, strings or null", () => {
+        expect(() => stopsOf(null as never)).toThrow(new TypeError('"x" takes one value, a list of values or values keyed by progress, not null.'));
+        expect(() => stopsOf(undefined as never)).toThrow(new TypeError('"x" takes one value, a list of values or values keyed by progress, not undefined.'));
+        expect(() => stopsOf(true as never)).toThrow(new TypeError('"x" takes one value, a list of values or values keyed by progress, not boolean.'));
+        expect(() => stopsOf([undefined, 1] as never)).toThrow(new TypeError('"x" has a value of type undefined at 0; values are numbers, strings, or `null` for the value underneath.'));
+        expect(() => stopsOf({0.5: {}} as never)).toThrow(new TypeError('"x" has a value of type object at 0.5; values are numbers, strings, or `null` for the value underneath.'));
     });
 });
 

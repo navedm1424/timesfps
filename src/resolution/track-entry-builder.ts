@@ -3,8 +3,8 @@ import type {Easing} from "../easing.ts";
 import type {RepeatOptions} from "../playback-options.ts";
 import type {Seconds} from "../types.ts";
 import {clamp} from "../utils/math.ts";
-import {TrackRun, type TrackStops} from "./track-runs.ts";
-import type {Extrapolation, HoldExtrapolation, LoopExtrapolation, OscillateExtrapolation, TrackEntry} from "./tracks.ts";
+import {KeyedRamp, type TrackStops} from "./keyed-ramps.ts";
+import type {Extrapolation, HoldExtrapolation, LoopExtrapolation, OscillateExtrapolation, TrackEntry} from "./track-entries.ts";
 import {type CurrentValueToken, currentValueToken, type InterpolatedValueToken, type TrackValue} from "./track-values.ts";
 
 /** When something starts, how long one play of it lasts, and how it repeats. */
@@ -36,50 +36,62 @@ export class TrackEntryBuilder {
     private holdsBefore = false;
     private holdsAfter = false;
 
-    /** `play` is from the timing's start. */
+    /** `keyedRamp` is from the timing's start. */
     private constructor(
         private readonly name: string | undefined,
         private readonly timing: PlayTiming,
-        private readonly play: TrackRun<PendingValue>
+        private readonly keyedRamp: KeyedRamp<PendingValue>
     ) {}
 
     /** An entry's play through its stops, each missing value a placeholder of its own. */
     static play(name: string | undefined, timing: PlayTiming, easing: Easing, stops: TrackStops<CSSValue | null>): TrackEntryBuilder {
-        return new TrackEntryBuilder(name, timing, TrackRun.play(timing.duration, easing, stops.map(value => value ?? placeholder())));
+        return new TrackEntryBuilder(name, timing, KeyedRamp.play(timing.duration, easing, stops.map(value => value ?? placeholder())));
     }
 
-    /** A repeating sequence's iteration, its children merged into it, `iteration` after the outermost definition starts. */
-    static merged(name: string | undefined, timing: PlayTiming, iteration: TrackRun<PendingValue>): TrackEntryBuilder {
-        return new TrackEntryBuilder(name, timing, iteration.shifted(-timing.start));
+    /** A repeating sequence's iteration, its children merged into it, `keyedRamp` after the outermost definition starts. */
+    static merged(name: string | undefined, timing: PlayTiming, keyedRamp: KeyedRamp<PendingValue>): TrackEntryBuilder {
+        return new TrackEntryBuilder(name, timing, keyedRamp.shifted(-timing.start));
     }
 
     /** When its first play starts. */
     get start(): Seconds {
-        return this.timing.start + this.play.start;
+        return this.timing.start + this.keyedRamp.start;
     }
 
-    /** When its last play ends; repeating forever, it never ends. */
+    /** Whether it ends: it doesn't when it repeats forever. */
+    get ends(): boolean {
+        return !repeatsForever(this.timing);
+    }
+
+    /** When its last play ends; `Infinity` when it never ends. */
     get end(): Seconds {
-        return this.repeatsForever ? Infinity : this.playOf(this.lastPlayIndex).end;
+        return this.ends ? this.playOf(this.lastPlayIndex).end : Infinity;
     }
 
-    /** Its plays one after another. */
-    get laidOut(): TrackRun<PendingValue> {
-        return TrackRun.joined(Array.from({length: this.lastPlayIndex + 1}, (_, index) => this.playOf(index)));
+    /** Its plays one after another; it must end. */
+    get laidOut(): KeyedRamp<PendingValue> {
+        this.requireEnd("plays to lay out one after another");
+        return KeyedRamp.joined(Array.from({length: this.lastPlayIndex + 1}, (_, index) => this.playOf(index)));
     }
 
     /** Whether the value it starts on is missing. */
-    get hasOpenStart(): boolean {
-        return isOpen(this.play.startValue);
+    get hasMissingStart(): boolean {
+        return isMissing(this.startValue);
     }
 
     /** Whether the value it ends on is missing; one that never ends has none to take. */
-    get hasOpenEnd(): boolean {
-        return !this.repeatsForever && isOpen(this.endValue);
+    get hasMissingEnd(): boolean {
+        return this.ends && isMissing(this.endValue);
     }
 
-    /** The value its last play ends on. */
+    /** The value its first play starts on. */
+    get startValue(): PendingValue {
+        return this.keyedRamp.startValue;
+    }
+
+    /** The value its last play ends on; it must end. */
     get endValue(): PendingValue {
+        this.requireEnd("end value");
         return this.playOf(this.lastPlayIndex).endValue;
     }
 
@@ -92,10 +104,10 @@ export class TrackEntryBuilder {
 
     /** Gives a missing start `value`. */
     assignStart(value: PendingValue): void {
-        assign(this.play.startValue, value);
+        assign(this.startValue, value);
     }
 
-    /** Gives a missing end `value`. */
+    /** Gives a missing end `value`; it must end. */
     assignEnd(value: PendingValue): void {
         assign(this.endValue, value);
     }
@@ -110,18 +122,14 @@ export class TrackEntryBuilder {
         this.holdsAfter = true;
     }
 
-    /** The track entry: its play as its keyed run, each placeholder with its value, or the property's current value without one, and what it shows before and after it. */
+    /** The track entry: its play as its keyed ramp, each placeholder with its value, or the property's current value without one, and what it shows before and after it. */
     build(): TrackEntry {
         const {name, timing: {start, duration}, holdsBefore, holdsAfter} = this;
         const resolvedTokens = new Map<InterpolatedValueToken<PendingValue>, TrackValue>();
-        const keyedRun = this.play.map(value => resolvedValueOf(value, resolvedTokens));
+        const keyedRamp = this.keyedRamp.map(value => resolvedValueOf(value, resolvedTokens));
         const repeats = this.repeatPattern;
         const postExtrapolation: Extrapolation | undefined = repeats ? {...repeats, holdsAfter} : holdsAfter ? hold : undefined;
-        return {name, start, duration, keyedRun, ...(holdsBefore && {preExtrapolation: hold}), ...(postExtrapolation && {postExtrapolation})};
-    }
-
-    private get repeatsForever(): boolean {
-        return repeatsForever(this.timing);
+        return {name, start, duration, keyedRamp, ...(holdsBefore && {preExtrapolation: hold}), ...(postExtrapolation && {postExtrapolation})};
     }
 
     /** Its repeats after its first play: a loop, or an oscillation that flips in time for `reverse` and in values for `mirror`; none without repeats or duration. */
@@ -140,88 +148,16 @@ export class TrackEntryBuilder {
         return duration === 0 ? 0 : repeat;
     }
 
+    /** Throws when it never ends, so it has no `missing`. */
+    private requireEnd(missing: string): void {
+        if (!this.ends)
+            throw new Error(`A track entry builder that repeats forever never ends, so it has no ${missing}. Check \`ends\` first, or build it so it doesn't repeat forever.`);
+    }
+
     /** Its play at `index`, from the timing's start. */
-    private playOf(index: number): TrackRun<PendingValue> {
+    private playOf(index: number): KeyedRamp<PendingValue> {
         const {start, duration, repeatOptions} = this.timing;
-        return this.play.iteration(index, duration, repeatOptions).shifted(start);
-    }
-}
-
-/**
- * Track entry builders laid over each other in the order they're added, each over the ones before it.
- * - One that a later one starts with or before, and ends with or after, never shows.
- * - A missing start or end takes the value of the topmost one under it running there, other than the ones it hides.
- *   With none, a start takes the end value of the closest one that ends by it, and an end the start of the closest one that starts once it ends,
- *   the topmost of ties, and when both values are missing, or there's none, they're the current value.
- * - It holds after it ends when it ends, and its end lands on none under it. The last added of the ones that start first holds before it starts.
- */
-export class TrackLayering {
-    /** In the order they're added; one that never shows is null. */
-    private readonly runs: (TrackEntryBuilder | null)[] = [];
-    /** Each one whose missing start lands on none, and the closest one that ends by its start. */
-    private readonly startNeighbors = new Map<TrackEntryBuilder, TrackEntryBuilder | undefined>();
-    /** Each one whose missing end lands on none, and the closest one that starts once it ends. */
-    private readonly endNeighbors = new Map<TrackEntryBuilder, TrackEntryBuilder | undefined>();
-    /** The last added of the ones that start first. */
-    private firstStarting: TrackEntryBuilder | undefined;
-
-    add(run: TrackEntryBuilder): void {
-        let startLanding: TrackEntryBuilder | undefined;
-        let endLanding: TrackEntryBuilder | undefined;
-        let startNeighbor: TrackEntryBuilder | undefined;
-        let endNeighbor: TrackEntryBuilder | undefined;
-        for (let index = this.runs.length - 1; index >= 0; index--) {
-            const below = this.runs[index];
-            if (!below)
-                continue;
-            if (run.start <= below.start && below.end <= run.end) {
-                this.runs[index] = null;
-                continue;
-            }
-            if (!startLanding && below.start <= run.start && run.start < below.end)
-                startLanding = below;
-            if (!endLanding && below.start <= run.end && run.end < below.end)
-                endLanding = below;
-            if (below.end <= run.start && (!startNeighbor || below.end > startNeighbor.end))
-                startNeighbor = below;
-            if (below.start >= run.end && (!endNeighbor || below.start < endNeighbor.start))
-                endNeighbor = below;
-        }
-
-        for (const [waiting, neighbor] of this.startNeighbors) {
-            if (run.end <= waiting.start && (!neighbor || run.end >= neighbor.end))
-                this.startNeighbors.set(waiting, run);
-        }
-        for (const [waiting, neighbor] of this.endNeighbors) {
-            if (run.start >= waiting.end && (!neighbor || run.start <= neighbor.start))
-                this.endNeighbors.set(waiting, run);
-        }
-
-        if (startLanding)
-            run.assignStart(startLanding.valueAt(run.start));
-        else if (run.hasOpenStart)
-            this.startNeighbors.set(run, startNeighbor);
-        if (endLanding)
-            run.assignEnd(endLanding.valueAt(run.end));
-        else {
-            if (run.end !== Infinity)
-                run.holdAfter();
-            if (run.hasOpenEnd)
-                this.endNeighbors.set(run, endNeighbor);
-        }
-        if (!this.firstStarting || run.start <= this.firstStarting.start)
-            this.firstStarting = run;
-        this.runs.push(run);
-    }
-
-    /** The track entries of the ones that show, in the order they're added, each missing value that waited for a neighbor taking its value. */
-    build(): TrackEntry[] {
-        for (const [run, neighbor] of this.startNeighbors)
-            run.assignStart(neighbor?.endValue ?? currentValueToken);
-        for (const [run, neighbor] of this.endNeighbors)
-            run.assignEnd(neighbor?.valueAt(neighbor.start) ?? currentValueToken);
-        this.firstStarting?.holdBefore();
-        return this.runs.filter(run => run !== null).map(run => run.build());
+        return this.keyedRamp.iteration(index, duration, repeatOptions).shifted(start);
     }
 }
 
@@ -244,7 +180,7 @@ function openPlaceholderOf(value: PendingValue): Placeholder | undefined {
     return value.value === undefined ? value : openPlaceholderOf(value.value);
 }
 
-export function isOpen(value: PendingValue): boolean {
+function isMissing(value: PendingValue): boolean {
     return openPlaceholderOf(value) !== undefined;
 }
 
@@ -252,7 +188,7 @@ export function isOpen(value: PendingValue): boolean {
  * Gives `value` to the placeholder without a value that `target` comes to, if there's one.
  * A value made from that placeholder can't be its own, so it stays without one.
  */
-export function assign(target: PendingValue, value: PendingValue): void {
+function assign(target: PendingValue, value: PendingValue): void {
     const open = openPlaceholderOf(target);
     if (open && !isMadeFrom(value, open)) open.value = value;
 }

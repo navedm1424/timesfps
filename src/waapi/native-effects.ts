@@ -2,7 +2,7 @@ import type {CubicBezier} from "../cubic-bezier.ts";
 import {CubicBezierEasing, type CubicBezierEasingParams, type Easing, LinearEasing, SpringEasing, StepsEasing} from "../easing.ts";
 import {linear} from "../easing-specifier.ts";
 import type {DampedSpring} from "../damped-spring.ts";
-import {endValueOf, startValueOf, type TrackRun, type TrackSpan, type TrackStops} from "../resolution/track-runs.ts";
+import {endValueOf, type KeyedRamp, startValueOf, type TrackSpan, type TrackStops} from "../resolution/keyed-ramps.ts";
 import {interpolatedValueOf, type TrackValue} from "../resolution/track-values.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {clamp, invLerp, lerp} from "../utils/math.ts";
@@ -36,22 +36,22 @@ export interface NativeAnimationEffect {
  * A single whole play keeps its easing on the effect, with the stops as linear keyframes; otherwise the easings are split into the keyframes.
  */
 export function nativeEffectOf(
-    {run, delay, duration, iterations, direction, fill}: PlacedEffect,
+    {ramp, delay, duration, iterations, direction, fill}: PlacedEffect,
     name: string | undefined,
     textOf: (value: TrackValue) => string
 ): NativeAnimationEffect {
     const timing = {delay, duration, iterations, direction, fill, name};
-    if (easesOnEffect(run, duration)) {
-        const [span] = run.spans;
+    if (easesOnEffect(ramp, duration)) {
+        const [span] = ramp.spans;
         return {...timing, easing: wholeNativeEasingOf(span!.easing), keyframes: span!.stops.stops.map(({offset, value}) => ({offset, value: textOf(value)}))};
     }
     if (duration === 0)
-        return {...timing, easing: {type: 'linear'}, keyframes: [{offset: 0, value: textOf(run.startValue)}, {offset: 1, value: textOf(run.endValue)}]};
-    return {...timing, easing: {type: 'linear'}, keyframes: keyframesOf(run.spans, duration, textOf)};
+        return {...timing, easing: {type: 'linear'}, keyframes: [{offset: 0, value: textOf(ramp.startValue)}, {offset: 1, value: textOf(ramp.endValue)}]};
+    return {...timing, easing: {type: 'linear'}, keyframes: keyframesOf(ramp.spans, duration, textOf)};
 }
 
-function easesOnEffect(run: TrackRun<TrackValue>, duration: Seconds): boolean {
-    const [span, ...otherSpans] = run.spans;
+function easesOnEffect(ramp: KeyedRamp<TrackValue>, duration: Seconds): boolean {
+    const [span, ...otherSpans] = ramp.spans;
     return !!span && otherSpans.length === 0 && span.start === 0 && span.end === duration && runsOnEffect(span);
 }
 

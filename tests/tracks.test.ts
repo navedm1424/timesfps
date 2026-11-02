@@ -4,8 +4,8 @@ import {animation} from "../src/animation.ts";
 import {AnimationValues, resolveTargets} from "../src/dom/mapping.ts";
 import {CubicBezierEasing, type Easing, StepsEasing} from "../src/easing.ts";
 import {linear} from "../src/easing-specifier.ts";
-import {NumericStops} from "../src/resolution/stops.ts";
-import {type AnimationPlan, plan, type SequencePlan} from "../src/resolution/plan.ts";
+import {NumericStops} from "./numeric-stops.ts";
+import {type AnimationPlan, plan, type PlanNode, type SequencePlan} from "../src/resolution/plan.ts";
 import {SequenceDefinition} from "../src/sequence.ts";
 import {SequenceTiming} from "../src/sequence-timing.ts";
 import type {PlaybackOptions, RepeatOptions} from "../src/playback-options.ts";
@@ -56,6 +56,17 @@ function sequencePlanOf(
         return [entry.name, 'sequence' in entry ? mappingOf(entry.sequence, entryPath) : [elementsByPath[entryPath] ?? [element], valuesByPath[entryPath]]];
     }));
     return plan(SequenceDefinition.of(timing, mappingOf(timing, undefined) as never), target => resolveTargets(target, scope));
+}
+
+/** The plan with the sequence at each path in `repeatsByPath` repeating as given there; paths are within the plan. */
+function withRepeats(plan: SequencePlan, repeatsByPath: { [path: EntryPath]: RepeatOptions }, path?: EntryPath): SequencePlan {
+    const entries = [...plan.entries].map(([name, entry]): [string, PlanNode] => {
+        if (entry.type === 'animation')
+            return [name, entry];
+        const entryPath = naming.entryPathOf(path, name);
+        return [name, {...withRepeats(entry, repeatsByPath, entryPath), repeatOptions: repeatsByPath[entryPath] ?? {}}];
+    });
+    return {...plan, entries: new Map(entries)};
 }
 
 /** Where an entry placed right after the sequence starts, which is the sequence's anchor duration; paths are within the sequence. */
@@ -524,6 +535,134 @@ describe("NativeEffectsResolver missing values", () => {
     it("starts an entry without a value at 0 and nothing before it from the property's current value", () => {
         const effects = animationTracksOf(AnimationTiming.of({duration: 1}), {x: {1: 1}}).get(element)!.x!;
         expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 1]]);
+    });
+});
+
+describe("NativeEffectsResolver repeating sequences", () => {
+    const sample = (effects: readonly NativeAnimationEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
+    const effectsOf = (timing: SequenceTiming, repeatsByPath: { [path: EntryPath]: RepeatOptions }, valuesByPath: { [path: EntryPath]: AnimationValues }) =>
+        NativeEffectsResolver.resolve(new TracksResolver(withRepeats(sequencePlanOf(timing, valuesByPath), repeatsByPath), naming).resolve(), numericResolver).get(element)!.x!;
+
+    it("merges a repeating sequence's entries into one entry that repeats as the sequence does, each end held until the next entry starts", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        expect(effects.map(effect => ({name: effect.name, ...timingOf(effect)})))
+            .toEqual([{name: 's>a+s>b', delay: 0, duration: 2.5, iterations: 2, direction: 'normal', fill: 'both'}]);
+        expect(sample(effects, [0.5, 1.25, 2, 3, 3.75, 4.5, 6])).toEqual(closeTo([[0.5, 1, 5.5, 0.5, 1, 5.5, 6]])[0]);
+    });
+
+    it("flips a mirrored sequence's whole iteration", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1, repeatMode: 'mirror'}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        expect(sample(effects, [0.5, 2, 3, 3.75, 4.5, 6])).toEqual(closeTo([[0.5, 5.5, 5.5, 1, 0.5, 0]])[0]);
+    });
+
+    it("puts an entry in a repeating sequence over the one under it while it runs, and shows that one again once it ends, in every iteration", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a', 0)
+            .add(AnimationTiming.of({duration: 0.5}), 'b', 0.5)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        expect(effects).toHaveLength(1);
+        expect(sample(effects, [0.25, 0.75, 1.5, 2.25, 2.75, 3.5])).toEqual(closeTo([[0.125, 5.5, 0.75, 0.125, 5.5, 0.75]])[0]);
+    });
+
+    it("ends an entry in a repeating sequence without a value at 1 on the start of the next one in it", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {0: 5, 1: 6}}});
+        expect(sample(effects, [0.5, 1.25, 3])).toEqual(closeTo([[2.5, 5, 2.5]])[0]);
+    });
+
+    it("starts an entry in a repeating sequence without a value at 0 from the value of the one under it there", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': {x: {1: 3}}});
+        expect(sample(effects, [1.5, 3.5])).toEqual(closeTo([[1.75, 1.75]])[0]);
+    });
+
+    it("gives the property's current value to an end and the start after it when both are missing in a repeating sequence", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {1: 6}}});
+        expect(sample(effects, [0.5, 1.25, 2])).toEqual(closeTo([[0.125, 0.25, 3.125]])[0]);
+    });
+
+    it("ends a repeating sequence's iteration without a value on the start of the entry after the sequence", () => {
+        const s = SequenceTiming.builder().add(AnimationTiming.of({duration: 1}), 'a').build();
+        const sequence = SequenceTiming.builder()
+            .add(s, 's', 0)
+            .add(AnimationTiming.of({duration: 1}), 'n', 3)
+            .build();
+        const effects = effectsOf(sequence, {s: {repeat: 1}}, {'s>a': {x: {0: 0}}, n: {x: {0: 5, 1: 6}}});
+        expect(effects.map(({name}) => name)).toEqual(['s>a', 'n']);
+        expect(sample(effects, [0.5, 1.5, 2.5])).toEqual(closeTo([[2.5, 2.5, 5]])[0]);
+    });
+
+    it("plays all the repeats of a repeating sequence inside a repeating sequence in each of the outer one's iterations", () => {
+        const t = SequenceTiming.builder().add(AnimationTiming.of({duration: 1}), 'a').build();
+        const s = SequenceTiming.builder()
+            .add(t, 't', 0)
+            .add(AnimationTiming.of({duration: 0.5}), 'b', 2.5)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}, 's>t': {repeat: 1, repeatMode: 'mirror'}}, {'s>t>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        expect(effects.map(effect => ({name: effect.name, ...timingOf(effect)})))
+            .toEqual([{name: 's>t>a+s>b', delay: 0, duration: 3, iterations: 2, direction: 'normal', fill: 'both'}]);
+        expect(sample(effects, [0.5, 1.25, 2.25, 2.75, 3.5, 4.25, 5.25, 5.75])).toEqual(closeTo([[0.5, 0.75, 0, 5.5, 0.5, 0.75, 0, 5.5]])[0]);
+    });
+
+    it("plays an entry that repeats forever in a repeating sequence once in each iteration, and goes on with it under the sequence once that ends", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 's>a', iterations: Infinity}, {name: 's>a+s>b', iterations: 2}]);
+        expect(sample(effects, [0.5, 1.5, 2.5, 3.5, 4.5, 5.25])).toEqual(closeTo([[0.5, 5.5, 0.5, 5.5, 0.5, 0.25]])[0]);
+    });
+
+    it("plays a sequence that repeats forever in a repeating sequence once in each iteration, and goes on with it under the sequence once that ends", () => {
+        const t = SequenceTiming.builder().add(AnimationTiming.of({duration: 1}), 'a').build();
+        const s = SequenceTiming.builder()
+            .add(t, 't', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}, 's>t': {repeat: Infinity}}, {'s>t>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 's>t>a', iterations: Infinity}, {name: 's>t>a+s>b', iterations: 2}]);
+        expect(sample(effects, [0.5, 1.5, 2.5, 3.5, 4.5, 5.25])).toEqual(closeTo([[0.5, 5.5, 0.5, 5.5, 0.5, 0.25]])[0]);
+    });
+
+    it("makes no continuations in a sequence that repeats forever", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: Infinity}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 's>a+s>b', iterations: Infinity}]);
+        expect(sample(effects, [4.5, 5.5])).toEqual(closeTo([[0.5, 5.5]])[0]);
+    });
+
+    it("layers a repeating sequence over the entries outside it as one entry, repeating as the sequence does", () => {
+        const s = SequenceTiming.builder().add(AnimationTiming.of({duration: 0.5}), 'a').build();
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 4}), 'x', 0)
+            .add(s, 's', 1)
+            .build();
+        const effects = effectsOf(sequence, {s: {repeat: 1}}, {x: {x: {0: 10, 1: 14}}, 's>a': line});
+        expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 'x', iterations: 1}, {name: 's>a', iterations: 2}]);
+        expect(sample(effects, [0.5, 1.25, 1.75, 2.5])).toEqual(closeTo([[10.5, 0.5, 0.5, 12.5]])[0]);
     });
 });
 

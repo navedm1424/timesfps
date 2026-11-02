@@ -11,7 +11,7 @@ export function groupBy<Item, Key>(items: Iterable<Item>, keyOf: (item: Item) =>
 }
 
 /** The map's value for `key`, set to `createValue()` first when it has none. */
-export function getOrInsert<Key, Value>(map: Map<Key, Value>, key: Key, createValue: () => NoInfer<Value>): Value {
+export function getOrInsertComputed<Key, Value>(map: Map<Key, Value>, key: Key, createValue: () => NoInfer<Value>): Value {
     if (!map.has(key)) map.set(key, createValue());
     return map.get(key)!;
 }

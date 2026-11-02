@@ -77,18 +77,18 @@ export function endValueOf<Value>({easing, stops}: TrackSpan<Value>): Value | In
 }
 
 /** Spans laid out one after another, without gaps. */
-export class TrackRun<Value> {
+export class KeyedRamp<Value> {
     constructor(readonly spans: readonly TrackSpan<Value>[]) {}
 
-    static play<Value>(duration: Seconds, easing: Easing, stops: TrackStops<Value>): TrackRun<Value> {
-        return new TrackRun([{start: 0, end: duration, easing, stops}]);
+    static play<Value>(duration: Seconds, easing: Easing, stops: TrackStops<Value>): KeyedRamp<Value> {
+        return new KeyedRamp([{start: 0, end: duration, easing, stops}]);
     }
 
-    /** The runs one after another, each one's end value held until the next starts. */
-    static joined<Value>(runs: readonly TrackRun<Value>[]): TrackRun<Value | InterpolatedValueToken<Value>> {
-        return new TrackRun(runs.flatMap((run, index): TrackSpan<Value | InterpolatedValueToken<Value>>[] => {
-            const previous = runs[index - 1];
-            return previous ? [...holdSpans(previous.endValue, previous.end, run.start), ...run.spans] : [...run.spans];
+    /** The ramps one after another, each one's end value held until the next starts. */
+    static joined<Value>(ramps: readonly KeyedRamp<Value>[]): KeyedRamp<Value | InterpolatedValueToken<Value>> {
+        return new KeyedRamp(ramps.flatMap((ramp, index): TrackSpan<Value | InterpolatedValueToken<Value>>[] => {
+            const previous = ramps[index - 1];
+            return previous ? [...holdSpans(previous.endValue, previous.end, ramp.start), ...ramp.spans] : [...ramp.spans];
         }));
     }
 
@@ -122,22 +122,22 @@ export class TrackRun<Value> {
         return {stops, progress: easing.progressAt((time - start) / (end - start))};
     }
 
-    /** The same run with each value transformed. */
-    map<Other>(transform: (value: Value) => Other): TrackRun<Other> {
-        return new TrackRun(this.spans.map(span => ({...span, stops: span.stops.map(value => transform(value))})));
+    /** The same ramp with each value transformed. */
+    map<Other>(transform: (value: Value) => Other): KeyedRamp<Other> {
+        return new KeyedRamp(this.spans.map(span => ({...span, stops: span.stops.map(value => transform(value))})));
     }
 
-    shifted(by: Seconds): TrackRun<Value> {
-        return new TrackRun(this.spans.map(span => ({...span, start: span.start + by, end: span.end + by})));
+    shifted(by: Seconds): KeyedRamp<Value> {
+        return new KeyedRamp(this.spans.map(span => ({...span, start: span.start + by, end: span.end + by})));
     }
 
     /**
-     * The part of the run from `start` to `end`. A span cut through its easing keeps the stops its cut easing reaches, where they are,
+     * The part of the ramp from `start` to `end`. A span cut through its easing keeps the stops its cut easing reaches, where they are,
      * with a stop at each progress the cut easing starts, turns and ends at that has none: the value there.
      * A span without duration stays from `start` up to, but not at, `end`.
      */
-    cut(start: Seconds, end: Seconds): TrackRun<Value | InterpolatedValueToken<Value>> {
-        return new TrackRun(this.spans.flatMap((span): TrackSpan<Value | InterpolatedValueToken<Value>>[] => {
+    cut(start: Seconds, end: Seconds): KeyedRamp<Value | InterpolatedValueToken<Value>> {
+        return new KeyedRamp(this.spans.flatMap((span): TrackSpan<Value | InterpolatedValueToken<Value>>[] => {
             if (span.end === span.start) return span.start >= start && span.start < end ? [span] : [];
             const cutStart = Math.max(span.start, start);
             const cutEnd = Math.min(span.end, end);
@@ -150,20 +150,20 @@ export class TrackRun<Value> {
         }));
     }
 
-    /** The run with `top` in place of its own spans for as long as `top` lasts. */
-    overlaid(top: TrackRun<Value>): TrackRun<Value | InterpolatedValueToken<Value>> {
-        return new TrackRun([...this.cut(this.start, top.start).spans, ...top.spans, ...this.cut(top.end, this.end).spans]);
+    /** The ramp with `top` in place of its own spans for as long as `top` lasts. */
+    overlaid(top: KeyedRamp<Value>): KeyedRamp<Value | InterpolatedValueToken<Value>> {
+        return new KeyedRamp([...this.cut(this.start, top.start).spans, ...top.spans, ...this.cut(top.end, this.end).spans]);
     }
 
-    heldUntil(time: Seconds): TrackRun<Value | InterpolatedValueToken<Value>> {
-        return new TrackRun([...this.spans, ...holdSpans(this.endValue, this.end, time)]);
+    heldUntil(time: Seconds): KeyedRamp<Value | InterpolatedValueToken<Value>> {
+        return new KeyedRamp([...this.spans, ...holdSpans(this.endValue, this.end, time)]);
     }
 
     /**
-     * The run in the iteration at `index` of a repeat whose iterations last `iterationDuration`, each starting after the previous one and the repeat delay.
+     * The ramp in the iteration at `index` of a repeat whose iterations last `iterationDuration`, each starting after the previous one and the repeat delay.
      * Every other iteration of a reverse or a mirror flips in time: a reverse runs the easing backwards, a mirror keeps it running forwards through flipped stops.
      */
-    iteration(index: number, iterationDuration: Seconds, {repeatDelay = 0, repeatMode = 'loop'}: RepeatOptions): TrackRun<Value> {
+    iteration(index: number, iterationDuration: Seconds, {repeatDelay = 0, repeatMode = 'loop'}: RepeatOptions): KeyedRamp<Value> {
         const iterationStart = index * (iterationDuration + repeatDelay);
         if (index % 2 === 0 || repeatMode === 'loop') return this.shifted(iterationStart);
 
@@ -173,7 +173,7 @@ export class TrackRun<Value> {
             easing: repeatMode === 'reverse' ? easing.reverse() : easing,
             stops: repeatMode === 'reverse' ? stops : stops.reverse()
         }));
-        return new TrackRun(flipped.reverse()).shifted(iterationStart);
+        return new KeyedRamp(flipped.reverse()).shifted(iterationStart);
     }
 }
 

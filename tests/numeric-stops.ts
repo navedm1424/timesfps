@@ -1,5 +1,5 @@
-import type {Progress} from "../types.ts";
-import {remap} from "../utils/math.ts";
+import type {Progress} from "../src/types.ts";
+import {remap} from "../src/utils/math.ts";
 
 export interface NumericStop {
     offset: Progress;

@@ -5,6 +5,7 @@ import type {Easing} from "../easing.ts";
 import type {RepeatOptions} from "../playback-options.ts";
 import {type Definition, SequenceDefinition, type SequenceDefinitionEntry} from "../sequence.ts";
 import {resolveTransition} from "../transition.ts";
+import type {TweenStops} from "../tween-stops.ts";
 import type {Seconds} from "../types.ts";
 
 /** Times are local to the sequence an entry is in, or start at 0 for the outermost definition. */
@@ -13,6 +14,8 @@ interface EntryPlan {
     position: Seconds;
     /** How long one play of an animation, or a sequence, lasts, without delays or repeats; an animation with no targets takes no time. */
     playDuration: Seconds;
+    /** How it repeats after its first play; a sequence's is empty until sequences can repeat. */
+    repeatOptions: RepeatOptions;
 }
 
 /** A target of an animation, with the animation's own delay for it. */
@@ -23,7 +26,7 @@ export interface StaggeredTarget {
 
 export interface AnimationPlan extends EntryPlan {
     type: 'animation';
-    definition: AnimationDefinition;
+    stopsByProperty: { readonly [property: string]: TweenStops };
     /** The easing one play runs. */
     easing: Easing;
     targets: readonly StaggeredTarget[];
@@ -31,7 +34,6 @@ export interface AnimationPlan extends EntryPlan {
 
 export interface SequencePlan extends EntryPlan {
     type: 'sequence';
-    definition: SequenceDefinition;
     entries: ReadonlyMap<string, PlanNode>;
 }
 
@@ -73,39 +75,39 @@ abstract class EntryPlanner {
 
 class AnimationPlanner extends EntryPlanner {
     private constructor(
-        private readonly definition: AnimationDefinition,
-        private readonly targets: readonly Element[],
-        /** Each target's own delay. */
-        private readonly delays: readonly Seconds[],
+        private readonly stopsByProperty: { readonly [property: string]: TweenStops },
+        private readonly targets: readonly StaggeredTarget[],
         private readonly playDuration: Seconds,
         anchorDuration: Seconds,
-        private readonly easing: Easing
+        private readonly easing: Easing,
+        private readonly repeatOptions: RepeatOptions
     ) {
         super(anchorDuration);
     }
 
     static of(definition: AnimationDefinition, resolveTargets: TargetsResolver): AnimationPlanner {
-        const targets = resolveTargets(definition.target);
-        const count = targets.length;
+        const elements = resolveTargets(definition.target);
+        const count = elements.length;
 
         const {delay = 0, ...repeatOptions} = definition.timing.playback;
-        const delays = targets.map((_, index) => typeof delay === 'function' ? delay(index, count) : delay);
+        const targets = elements.map((target, index): StaggeredTarget => ({target, delay: typeof delay === 'function' ? delay(index, count) : delay}));
 
         const {duration, easing} = resolveTransition(definition.timing.transition);
         const playDuration = count ? duration : 0;
-        const anchorDuration = count ? Math.max(...delays) + anchoredPlaysDuration(playDuration, repeatOptions) : 0;
+        const anchorDuration = count ? Math.max(...targets.map(target => target.delay)) + anchoredPlaysDuration(playDuration, repeatOptions) : 0;
 
-        return new AnimationPlanner(definition, targets, delays, playDuration, anchorDuration, easing);
+        return new AnimationPlanner(definition.stopsByProperty, targets, playDuration, anchorDuration, easing, repeatOptions);
     }
 
     plan(): AnimationPlan {
         return {
             type: 'animation',
-            definition: this.definition,
+            stopsByProperty: this.stopsByProperty,
             easing: this.easing,
-            targets: this.targets.map((target, index): StaggeredTarget => ({target, delay: this.delays[index]!})),
+            targets: this.targets,
             position: this.entryPosition,
-            playDuration: this.playDuration
+            playDuration: this.playDuration,
+            repeatOptions: this.repeatOptions
         };
     }
 }
@@ -113,7 +115,6 @@ class AnimationPlanner extends EntryPlanner {
 /** A sequence lasts until the latest end among its entries, which is also its duration for positions. */
 class SequencePlanner extends EntryPlanner {
     private constructor(
-        private readonly definition: SequenceDefinition,
         private readonly entries: ReadonlyMap<string, PlanNode>,
         private readonly playDuration: Seconds
     ) {
@@ -131,16 +132,16 @@ class SequencePlanner extends EntryPlanner {
         });
 
         const playDuration = Math.max(0, ...[...entrySpans.values()].map(({start, duration}) => start + duration));
-        return new SequencePlanner(definition, entries, playDuration);
+        return new SequencePlanner(entries, playDuration);
     }
 
     plan(): SequencePlan {
         return {
             type: 'sequence',
-            definition: this.definition,
             entries: this.entries,
             position: this.entryPosition,
-            playDuration: this.playDuration
+            playDuration: this.playDuration,
+            repeatOptions: {}
         };
     }
 }
