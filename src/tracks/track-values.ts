@@ -5,11 +5,11 @@ export interface CurrentValueToken {
     type: 'currentValue';
 }
 
-/** Stands for the value `factor` of the way from `start` to `end`; a factor outside 0–1 runs past them. */
+/** Stands for the value `factor` of the way from `from` to `to`; a factor outside 0–1 runs past them. */
 export interface InterpolatedValueToken<Value> {
     type: 'interpolated';
-    start: Value;
-    end: Value;
+    from: Value;
+    to: Value;
     factor: number;
 }
 
@@ -21,9 +21,9 @@ export type TrackValue = CSSValue | ValueToken;
 
 export const currentValueToken: CurrentValueToken = {type: 'currentValue'};
 
-/** `start` at 0, `end` at 1, and either one where both are the same; a token between them otherwise. */
-export function interpolatedValueOf<Value>(start: Value, end: Value, factor: number): Value | InterpolatedValueToken<Value> {
-    if (factor === 0 || start === end) return start;
-    if (factor === 1) return end;
-    return {type: 'interpolated', start, end, factor};
+/** `from` at 0, `to` at 1, and either one where both are the same; a token between them otherwise. */
+export function interpolatedValueOf<Value>(from: Value, to: Value, factor: number): Value | InterpolatedValueToken<Value> {
+    if (factor === 0 || from === to) return from;
+    if (factor === 1) return to;
+    return {type: 'interpolated', from, to, factor};
 }

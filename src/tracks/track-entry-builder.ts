@@ -1,13 +1,14 @@
 import type {CSSValue} from "../dom/mapping.ts";
 import type {Easing} from "../easing.ts";
 import type {RepeatOptions} from "../playback-options.ts";
+import type {TweenStops} from "../tween-stops.ts";
 import type {Seconds} from "../types.ts";
 import {clamp} from "../utils/math.ts";
-import {KeyedRamp, type TrackStops} from "./keyed-ramps.ts";
+import {KeyedRamp, TrackStops} from "./keyed-ramps.ts";
 import type {Extrapolation, HoldExtrapolation, LoopExtrapolation, OscillateExtrapolation, TrackEntry} from "./track-entries.ts";
 import {type CurrentValueToken, currentValueToken, type InterpolatedValueToken, type TrackValue} from "./track-values.ts";
 
-/** When something starts, how long one play of it lasts, and how it repeats. */
+/** When something starts, how long one iteration of it lasts, and how it repeats. */
 export interface PlayTiming {
     /** After the outermost definition starts. */
     start: Seconds;
@@ -29,7 +30,7 @@ type RepeatPattern = Omit<LoopExtrapolation, 'holdsAfter'> | Omit<OscillateExtra
 const hold: HoldExtrapolation = {type: 'hold'};
 
 /**
- * A track entry, built step by step: a play that repeats as its timing does, which is an entry's play, or a repeating sequence's iteration with its children merged into it.
+ * A track entry, built step by step: an iteration that repeats as its timing does, which is an entry's iteration, or a repeating sequence's iteration with its children merged into it.
  * Each missing value is a placeholder until a value is assigned to it. Then whether it holds before and after is set, and it builds into the track entry.
  */
 export class TrackEntryBuilder {
@@ -43,9 +44,9 @@ export class TrackEntryBuilder {
         private readonly keyedRamp: KeyedRamp<PendingValue>
     ) {}
 
-    /** An entry's play through its stops, each missing value a placeholder of its own. */
-    static play(name: string | undefined, timing: PlayTiming, easing: Easing, stops: TrackStops<CSSValue | null>): TrackEntryBuilder {
-        return new TrackEntryBuilder(name, timing, KeyedRamp.play(timing.duration, easing, stops.map(value => value ?? placeholder())));
+    /** An entry's iteration through its stops, each missing value a placeholder of its own. */
+    static play(name: string | undefined, timing: PlayTiming, easing: Easing, stops: TweenStops): TrackEntryBuilder {
+        return new TrackEntryBuilder(name, timing, KeyedRamp.play(timing.duration, easing, new TrackStops(stops.stops).map(value => value ?? placeholder())));
     }
 
     /** A repeating sequence's iteration, its children merged into it, `keyedRamp` after the outermost definition starts. */
@@ -53,7 +54,7 @@ export class TrackEntryBuilder {
         return new TrackEntryBuilder(name, timing, keyedRamp.shifted(-timing.start));
     }
 
-    /** When its first play starts. */
+    /** When its first iteration starts. */
     get start(): Seconds {
         return this.timing.start + this.keyedRamp.start;
     }
@@ -63,52 +64,62 @@ export class TrackEntryBuilder {
         return !repeatsForever(this.timing);
     }
 
-    /** When its last play ends; `Infinity` when it never ends. */
+    /** When its last iteration ends; `Infinity` when it never ends. */
     get end(): Seconds {
-        return this.ends ? this.playOf(this.lastPlayIndex).end : Infinity;
+        return this.ends ? this.iterationOf(this.lastIterationIndex).end : Infinity;
     }
 
-    /** Its plays one after another; it must end. */
+    /** Whether it runs at `time`: from its start, up to but not at its end. */
+    runsAt(time: Seconds): boolean {
+        return this.start <= time && time < this.end;
+    }
+
+    /** Whether it starts with or before `other`, and ends with or after it. */
+    covers(other: TrackEntryBuilder): boolean {
+        return this.start <= other.start && other.end <= this.end;
+    }
+
+    /** Its iterations one after another; it must end. */
     get laidOut(): KeyedRamp<PendingValue> {
-        this.requireEnd("plays to lay out one after another");
-        return KeyedRamp.joined(Array.from({length: this.lastPlayIndex + 1}, (_, index) => this.playOf(index)));
+        this.requireEnd("iterations to lay out one after another");
+        return KeyedRamp.joined(Array.from({length: this.lastIterationIndex + 1}, (_, index) => this.iterationOf(index)));
     }
 
     /** Whether the value it starts on is missing. */
-    get hasMissingStart(): boolean {
+    get hasMissingStartValue(): boolean {
         return isMissing(this.startValue);
     }
 
     /** Whether the value it ends on is missing; one that never ends has none to take. */
-    get hasMissingEnd(): boolean {
+    get hasMissingEndValue(): boolean {
         return this.ends && isMissing(this.endValue);
     }
 
-    /** The value its first play starts on. */
+    /** The value its first iteration starts on. */
     get startValue(): PendingValue {
         return this.keyedRamp.startValue;
     }
 
-    /** The value its last play ends on; it must end. */
+    /** The value its last iteration ends on; it must end. */
     get endValue(): PendingValue {
         this.requireEnd("end value");
-        return this.playOf(this.lastPlayIndex).endValue;
+        return this.iterationOf(this.lastIterationIndex).endValue;
     }
 
-    /** The value at `time`: its play's then, held in the pause after it, and the value it starts on before it, or ends on after it. */
+    /** The value at `time`: its iteration's then, held in the pause after it, and the value it starts on before it, or ends on after it. */
     valueAt(time: Seconds): PendingValue {
         const {start, duration, repeatOptions: {repeatDelay = 0}} = this.timing;
-        const index = duration === 0 ? 0 : clamp(Math.floor((time - start) / (duration + repeatDelay)), 0, this.lastPlayIndex);
-        return this.playOf(index).valueAt(time);
+        const index = duration === 0 ? 0 : clamp(Math.floor((time - start) / (duration + repeatDelay)), 0, this.lastIterationIndex);
+        return this.iterationOf(index).valueAt(time);
     }
 
     /** Gives a missing start `value`. */
-    assignStart(value: PendingValue): void {
+    assignStartValue(value: PendingValue): void {
         assign(this.startValue, value);
     }
 
     /** Gives a missing end `value`; it must end. */
-    assignEnd(value: PendingValue): void {
+    assignEndValue(value: PendingValue): void {
         assign(this.endValue, value);
     }
 
@@ -122,7 +133,7 @@ export class TrackEntryBuilder {
         this.holdsAfter = true;
     }
 
-    /** The track entry: its play as its keyed ramp, each placeholder with its value, or the property's current value without one, and what it shows before and after it. */
+    /** The track entry: its iteration as its keyed ramp, each placeholder with its value, or the property's current value without one, and what it shows before and after it. */
     build(): TrackEntry {
         const {name, timing: {start, duration}, holdsBefore, holdsAfter} = this;
         const resolvedTokens = new Map<InterpolatedValueToken<PendingValue>, TrackValue>();
@@ -132,18 +143,18 @@ export class TrackEntryBuilder {
         return {name, start, duration, keyedRamp, ...(holdsBefore && {preExtrapolation: hold}), ...(postExtrapolation && {postExtrapolation})};
     }
 
-    /** Its repeats after its first play: a loop, or an oscillation that flips in time for `reverse` and in values for `mirror`; none without repeats or duration. */
+    /** Its repeats after its first iteration: a loop, or an oscillation that flips in time for `reverse` and in values for `mirror`; none without repeats or duration. */
     private get repeatPattern(): RepeatPattern | undefined {
         const {duration, repeatOptions: {repeat = 0, repeatDelay = 0, repeatMode = 'loop'}} = this.timing;
         if (repeat === 0 || duration === 0) return undefined;
-        const repeating = {iterations: repeat, pause: repeatDelay / duration};
+        const repeating = {repeat, pause: repeatDelay / duration};
         return repeatMode === 'loop'
             ? {type: 'loop', ...repeating}
             : {type: 'oscillate', ...repeating, flip: repeatMode === 'reverse' ? 'time' : 'values'};
     }
 
-    /** The index of its last play: 0 without duration, and `Infinity` when it repeats forever. */
-    private get lastPlayIndex(): number {
+    /** The index of its last iteration: 0 without duration, and `Infinity` when it repeats forever. */
+    private get lastIterationIndex(): number {
         const {duration, repeatOptions: {repeat = 0}} = this.timing;
         return duration === 0 ? 0 : repeat;
     }
@@ -154,8 +165,8 @@ export class TrackEntryBuilder {
             throw new Error(`A track entry builder that repeats forever never ends, so it has no ${missing}. Check \`ends\` first, or build it so it doesn't repeat forever.`);
     }
 
-    /** Its play at `index`, from the timing's start. */
-    private playOf(index: number): KeyedRamp<PendingValue> {
+    /** Its iteration at `index`, from the timing's start. */
+    private iterationOf(index: number): KeyedRamp<PendingValue> {
         const {start, duration, repeatOptions} = this.timing;
         return this.keyedRamp.iteration(index, duration, repeatOptions).shifted(start);
     }
@@ -198,7 +209,7 @@ function isMadeFrom(value: PendingValue, placeholder: Placeholder): boolean {
     if (value === placeholder) return true;
     if (typeof value !== 'object' || value.type === 'currentValue') return false;
     if (value.type === 'placeholder') return value.value !== undefined && isMadeFrom(value.value, placeholder);
-    return isMadeFrom(value.start, placeholder) || isMadeFrom(value.end, placeholder);
+    return isMadeFrom(value.from, placeholder) || isMadeFrom(value.to, placeholder);
 }
 
 /** The value with each placeholder's value, and the property's current value for each one without; an interpolated value resolves once. */
@@ -207,6 +218,6 @@ function resolvedValueOf(value: PendingValue, resolvedTokens: Map<InterpolatedVa
     if (typeof value !== 'object' || value.type === 'currentValue') return value;
 
     let resolved = resolvedTokens.get(value);
-    if (!resolved) resolvedTokens.set(value, resolved = {...value, start: resolvedValueOf(value.start, resolvedTokens), end: resolvedValueOf(value.end, resolvedTokens)});
+    if (!resolved) resolvedTokens.set(value, resolved = {...value, from: resolvedValueOf(value.from, resolvedTokens), to: resolvedValueOf(value.to, resolvedTokens)});
     return resolved;
 }

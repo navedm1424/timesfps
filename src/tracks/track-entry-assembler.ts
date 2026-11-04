@@ -2,10 +2,11 @@ import type {Easing} from "../easing.ts";
 import type {EntryPath, Naming} from "../naming.ts";
 import type {TweenStops} from "../tween-stops.ts";
 import type {Seconds} from "../types.ts";
-import {groupBy, shiftWhile} from "../utils/collections.ts";
-import {KeyedRamp, TrackStops} from "./keyed-ramps.ts";
+import {groupBy} from "../utils/collections.ts";
+import {KeyedRamp} from "./keyed-ramps.ts";
+import {resolveMissingValues} from "./missing-values.ts";
 import {type PendingValue, type PlayTiming, repeatsForever, TrackEntryBuilder} from "./track-entry-builder.ts";
-import {currentValueToken} from "./track-values.ts";
+import {laidOver} from "./track-layering.ts";
 
 /** An animation leaf's play of one property on one target. */
 export interface RawTrackEntry extends PlayTiming {
@@ -61,16 +62,16 @@ export class TrackEntryAssembler {
             : []);
     }
 
-    /** The builder of an entry's play, or of a repeating sequence's keyed ramp, that repeats as `timing` does: the unit's own by default. */
+    /** The builder of an entry's iteration, or of a repeating sequence's keyed ramp, that repeats as `timing` does: the unit's own by default. */
     private builderOf(unit: RepeatUnit, timing: PlayTiming = timingOf(unit)): TrackEntryBuilder {
         if (unit.type === 'sequence')
             return TrackEntryBuilder.merged(this.nameOf(pathsOf(unit.entries)), timing, this.keyedRampOf(unit));
         const {path, easing, stops} = unit.entry;
-        return TrackEntryBuilder.play(this.naming.trackEntryNameOf(path), timing, easing, new TrackStops(stops.stops));
+        return TrackEntryBuilder.play(this.naming.trackEntryNameOf(path), timing, easing, stops);
     }
 
     /**
-     * The repeating sequence's keyed ramp: the plays of the entries directly in it, and the repeats of each repeating sequence in it, its keyed ramp built first,
+     * The repeating sequence's keyed ramp: the iterations of the entries directly in it, and the repeats of each repeating sequence in it, its keyed ramp built first,
      * merged in stacking order. An entry or a repeating sequence that repeats forever plays once.
      */
     private keyedRampOf({sequence, entries}: SequenceUnit): KeyedRamp<PendingValue> {
@@ -98,38 +99,19 @@ function unitsIn(entries: readonly RawTrackEntry[], sequence?: PlayTiming): Repe
 }
 
 /**
- * The units' plays merged into one ramp, in stacking order, each over the ones before it.
- * A unit that starts within the ones before it takes a missing start from them there.
- * One that starts where they end, or later, follows them, their end value held until then: its missing start takes their end value,
- * or, when theirs is missing too, both are the current value.
- * A missing end takes the value of the ones before it there when it ends within them; otherwise, the start of the next unit that starts after it.
+ * The iterations of the units that show merged into one ramp, in stacking order, each over the ones before it, their missing values taken as they layer.
+ * One that starts within the ones before it replaces them while it lasts; one that starts where they end, or later, follows them, their end value held until then.
+ * A missing start that nothing ends by, or a missing end that nothing starts after, stays missing.
+ * Throws without units, since a keyed ramp has at least one span.
  */
 function merge(units: readonly TrackEntryBuilder[]): KeyedRamp<PendingValue> {
-    const [first, ...rest] = units;
-    let merged = first!.laidOut;
-    let endingUnit = first!;
-    /** The units whose missing end waits for a start, in the order they end. */
-    const pending = endingUnit.hasMissingEnd ? [endingUnit] : [];
-    for (const top of rest) {
-        const follows = top.start >= merged.end;
-        if (follows && top.hasMissingStart && endingUnit.hasMissingEnd) {
-            top.assignStart(currentValueToken);
-            endingUnit.assignEnd(currentValueToken);
-        } else
-            top.assignStart(merged.valueAt(top.start));
-        for (const ended of shiftWhile(pending, unit => unit.end <= top.start))
-            ended.assignEnd(top.startValue);
+    if (!units.length)
+        throw new Error("A repeating sequence's keyed ramp merges the units in it, but it has none. Merge at least one unit.");
+    const showing = units.reduce<TrackEntryBuilder[]>(laidOver, []);
+    resolveMissingValues(showing);
 
-        if (top.end < merged.end)
-            top.assignEnd(merged.valueAt(top.end));
-        else {
-            if (top.hasMissingEnd)
-                pending.push(top);
-            endingUnit = top;
-        }
-        merged = follows ? KeyedRamp.joined([merged, top.laidOut]) : merged.overlaid(top.laidOut);
-    }
-    return merged;
+    const [first, ...rest] = showing;
+    return rest.reduce((merged, top) => top.start >= merged.end ? KeyedRamp.joined([merged, top.laidOut]) : merged.overlaid(top.laidOut), first!.laidOut);
 }
 
 function byStart(first: { start: Seconds }, second: { start: Seconds }): number {

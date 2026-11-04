@@ -30,10 +30,3 @@ export function partitionPoint<Item>(items: readonly Item[], isPast: (item: Item
     }
     return low;
 }
-
-/** Shifts the items off the front of `queue` while `shouldShift` holds for the front one, and gives them in the order they're shifted. */
-export function shiftWhile<Item>(queue: Item[], shouldShift: (item: Item) => boolean): Item[] {
-    const shifted: Item[] = [];
-    while (queue.length > 0 && shouldShift(queue[0]!)) shifted.push(queue.shift()!);
-    return shifted;
-}

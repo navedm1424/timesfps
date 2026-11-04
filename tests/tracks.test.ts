@@ -5,7 +5,7 @@ import {AnimationValues, resolveTargets} from "../src/dom/mapping.ts";
 import {CubicBezierEasing, type Easing, StepsEasing} from "../src/easing.ts";
 import {linear} from "../src/easing-specifier.ts";
 import {NumericStops} from "./numeric-stops.ts";
-import {type AnimationPlan, plan, type PlanNode, type SequencePlan} from "../src/resolution/plan.ts";
+import {type AnimationPlan, plan, type PlanNode, type SequencePlan} from "../src/plan.ts";
 import {SequenceDefinition} from "../src/sequence.ts";
 import {SequenceTiming} from "../src/sequence-timing.ts";
 import type {PlaybackOptions, RepeatOptions} from "../src/playback-options.ts";
@@ -17,7 +17,10 @@ import type {NativeAnimationEffect, NativeKeyframe} from "../src/waapi/native-ef
 import {cssEasingOf, type NativeEasing} from "../src/waapi/native-easing.ts";
 import {alignNumbers, type CSSValueResolver} from "../src/waapi/css-values.ts";
 import {naming, type EntryPath} from "../src/naming.ts";
-import {TracksResolver} from "../src/resolution/tracks.ts";
+import {TrackEntryBuilder} from "../src/tracks/track-entry-builder.ts";
+import {layeredEntriesOf} from "../src/tracks/track-layering.ts";
+import {TracksResolver} from "../src/tracks/tracks.ts";
+import {TweenStops} from "../src/tween-stops.ts";
 import {type AnimationTracks, NativeEffectsResolver} from "../src/waapi/tracks.ts";
 
 const element = {} as Element;
@@ -163,11 +166,11 @@ function easedProgressAt(easing: Easing, x: number): number {
     return easing.progressAt(x);
 }
 
-/** What the definition means at `time`: each play through the stops, held through the repeat delays and after the last play. */
-function definedValueAt(easing: Easing, stops: NumericStops, playDuration: number, options: RepeatOptions, time: number): number {
+/** What the definition means at `time`: each iteration through the stops, held through the repeat delays and after the last iteration. */
+function definedValueAt(easing: Easing, stops: NumericStops, iterationDuration: number, options: RepeatOptions, time: number): number {
     const {repeat: repeatCount = 0, repeatDelay = 0, repeatMode = 'loop'} = options;
-    const iteration = Math.min(Math.floor(time / (playDuration + repeatDelay)), repeatCount);
-    const x = Math.min((time - iteration * (playDuration + repeatDelay)) / playDuration, 1);
+    const iteration = Math.min(Math.floor(time / (iterationDuration + repeatDelay)), repeatCount);
+    const x = Math.min((time - iteration * (iterationDuration + repeatDelay)) / iterationDuration, 1);
     if (iteration % 2 === 0 || repeatMode === 'loop') return stops.valueAt(easedProgressAt(easing, x));
     if (repeatMode === 'reverse') return stops.valueAt(easedProgressAt(easing, 1 - x));
     return reversedOf(stops).valueAt(easedProgressAt(easing, x));
@@ -182,7 +185,7 @@ describe("plans", () => {
             .add(AnimationTiming.of({duration: 1}), 'next', 'a>')
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, next: line}, {a: threeElements});
-        expect(sequencePlan.entries.get('a')).toMatchObject({position: 0, playDuration: 1});
+        expect(sequencePlan.entries.get('a')).toMatchObject({position: 0, iterationDuration: 1});
         expect(sequencePlan.entries.get('next')).toMatchObject({position: 3.75});
     });
 
@@ -192,7 +195,7 @@ describe("plans", () => {
             .add(AnimationTiming.of({duration: 1}), 'next', 'a>')
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, next: line});
-        expect(sequencePlan.entries.get('a')).toMatchObject({playDuration: 1});
+        expect(sequencePlan.entries.get('a')).toMatchObject({iterationDuration: 1});
         expect(sequencePlan.entries.get('next')).toMatchObject({position: 1.5});
     });
 
@@ -210,7 +213,7 @@ describe("plans", () => {
         const sequencePlan = sequencePlanOf(sequence, {a: line, b: line, c: line});
         expect(sequencePlan.entries.get('b')).toMatchObject({position: 1.5});
         expect(sequencePlan.entries.get('c')).toMatchObject({position: 1.5});
-        expect(sequencePlan).toMatchObject({position: 0, playDuration: 3.75});
+        expect(sequencePlan).toMatchObject({position: 0, iterationDuration: 3.75});
         expect(sequenceEndOf(sequence, {a: line, b: line, c: line})).toBe(3.75);
     });
 
@@ -233,10 +236,10 @@ describe("plans", () => {
             .add(AnimationTiming.of({duration: 1}), 'd', '>>+1')
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, b: line, c: line, d: line}, {b: [], d: []});
-        expect(sequencePlan.entries.get('b')).toMatchObject({targets: [], position: 3, playDuration: 0});
+        expect(sequencePlan.entries.get('b')).toMatchObject({targets: [], position: 3, iterationDuration: 0});
         expect(sequencePlan.entries.get('c')).toMatchObject({position: 3});
         expect(sequencePlan.entries.get('d')).toMatchObject({position: 5});
-        expect(sequencePlan).toMatchObject({playDuration: 5});
+        expect(sequencePlan).toMatchObject({iterationDuration: 5});
         expect(sequenceEndOf(sequence, {a: line, b: line, c: line, d: line}, {b: [], d: []})).toBe(5);
     });
 
@@ -654,6 +657,34 @@ describe("NativeEffectsResolver repeating sequences", () => {
         expect(sample(effects, [4.5, 5.5])).toEqual(closeTo([[0.5, 5.5]])[0]);
     });
 
+    it("takes nothing for what goes on under a repeating sequence from an entry the sequence hides, where that entry runs", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'i', 1)
+            .build();
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 4}), 'e', 0)
+            .add(s, 's', 0)
+            .build();
+        const effects = effectsOf(sequence, {s: {repeat: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
+        expect(effects.map(({name}) => name)).toEqual(['s>i', 's>a+s>i']);
+        expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 10]]);
+    });
+
+    it("takes nothing for what goes on under a repeating sequence from an entry the sequence hides, where that entry ends before it", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'i', 1)
+            .build();
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 0.5}), 'e', 0)
+            .add(s, 's', 0)
+            .build();
+        const effects = effectsOf(sequence, {s: {repeat: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
+        expect(effects.map(({name}) => name)).toEqual(['s>i', 's>a+s>i']);
+        expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 10]]);
+    });
+
     it("layers a repeating sequence over the entries outside it as one entry, repeating as the sequence does", () => {
         const s = SequenceTiming.builder().add(AnimationTiming.of({duration: 0.5}), 'a').build();
         const sequence = SequenceTiming.builder()
@@ -663,6 +694,19 @@ describe("NativeEffectsResolver repeating sequences", () => {
         const effects = effectsOf(sequence, {s: {repeat: 1}}, {x: {x: {0: 10, 1: 14}}, 's>a': line});
         expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 'x', iterations: 1}, {name: 's>a', iterations: 2}]);
         expect(sample(effects, [0.5, 1.25, 1.75, 2.5])).toEqual(closeTo([[10.5, 0.5, 0.5, 12.5]])[0]);
+    });
+});
+
+describe("layeredEntriesOf", () => {
+    const builderOf = (name: string, start: Seconds, duration: Seconds) =>
+        TrackEntryBuilder.play(name, {start, duration, repeatOptions: {}}, linear, TweenStops.of('x', {0: 0, 1: 1}));
+
+    it("holds an entry after it ends when the one under its end never shows", () => {
+        const entries = layeredEntriesOf([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
+        expect(entries.map(({name, postExtrapolation}) => ({name, postExtrapolation}))).toEqual([
+            {name: 'b', postExtrapolation: {type: 'hold'}},
+            {name: 'c', postExtrapolation: {type: 'hold'}}
+        ]);
     });
 });
 

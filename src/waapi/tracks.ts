@@ -1,15 +1,16 @@
+import {type ByElementAndProperty, mapByElementAndProperty} from "../dom/mapping.ts";
 import type {RepeatOptions} from "../playback-options.ts";
-import {KeyedRamp} from "../resolution/keyed-ramps.ts";
-import type {TrackEntry} from "../resolution/track-entries.ts";
-import type {Tracks} from "../resolution/tracks.ts";
-import type {TrackValue} from "../resolution/track-values.ts";
+import {KeyedRamp} from "../tracks/keyed-ramps.ts";
+import type {TrackEntry} from "../tracks/track-entries.ts";
+import type {Tracks} from "../tracks/tracks.ts";
+import type {TrackValue} from "../tracks/track-values.ts";
 import type {Seconds} from "../types.ts";
 import {lerp} from "../utils/math.ts";
 import type {CSSValueResolver} from "./css-values.ts";
 import {type NativeAnimationEffect, nativeEffectOf} from "./native-effects.ts";
 
 /** Each element's properties, each with its effects in the order they show over each other in. */
-export type AnimationTracks = Map<Element, { [property: string]: NativeAnimationEffect[] }>;
+export type AnimationTracks = ByElementAndProperty<NativeAnimationEffect[]>;
 
 /** One effect's plays, placed in time, before its values and its easings. */
 export interface PlacedEffect {
@@ -31,13 +32,11 @@ type EffectTiming = Pick<PlacedEffect, 'delay' | 'duration' | 'iterations' | 'di
  */
 export class NativeEffectsResolver {
     static resolve(tracks: Tracks, valueResolver: CSSValueResolver): AnimationTracks {
-        return new Map([...tracks.byTarget].map(([element, tracksByProperty]) => [element, Object.fromEntries(
-            Object.entries(tracksByProperty).map(([property, track]) => {
-                const texts = new TrackValueTexts(valueResolver, element, property);
-                for (const {keyedRamp} of track) texts.checkGivenValuesOf(keyedRamp);
-                return [property, track.flatMap(entry => nativeTimingOf(entry).map(effect => nativeEffectOf(effect, entry.name, texts.textOf)))];
-            })
-        )]));
+        return mapByElementAndProperty(tracks, (track, element, property) => {
+            const texts = new TrackValueTexts(valueResolver, element, property);
+            for (const {keyedRamp} of track) texts.checkGivenValuesOf(keyedRamp);
+            return track.flatMap(entry => nativeTimingOf(entry).map(effect => nativeEffectOf(effect, entry.name, texts.textOf)));
+        });
     }
 }
 
@@ -74,17 +73,17 @@ class TrackValueTexts {
         }
         if (value.type === 'currentValue') return valueResolver.currentValueOf(element, property);
 
-        const startText = this.textOf(value.start);
-        const endText = this.textOf(value.end);
-        const {unit, numbersByText} = valueResolver.alignedNumbersOf(element, property, [startText, endText]);
-        return `${lerp(numbersByText.get(startText)!, numbersByText.get(endText)!, value.factor)}${unit}`;
+        const fromText = this.textOf(value.from);
+        const toText = this.textOf(value.to);
+        const {unit, numbersByText} = valueResolver.alignedNumbersOf(element, property, [fromText, toText]);
+        return `${lerp(numbersByText.get(fromText)!, numbersByText.get(toText)!, value.factor)}${unit}`;
     }
 }
 
 /** The given values a value is made of. */
 function givenValuesOf(value: TrackValue): TrackValue[] {
     if (typeof value !== 'object') return [value];
-    return value.type === 'interpolated' ? [...givenValuesOf(value.start), ...givenValuesOf(value.end)] : [];
+    return value.type === 'interpolated' ? [...givenValuesOf(value.from), ...givenValuesOf(value.to)] : [];
 }
 
 /**
@@ -93,7 +92,7 @@ function givenValuesOf(value: TrackValue): TrackValue[] {
  */
 function nativeTimingOf({start, duration, keyedRamp, preExtrapolation, postExtrapolation}: TrackEntry): PlacedEffect[] {
     const repeatOptions: RepeatOptions = postExtrapolation && postExtrapolation.type !== 'hold' ? {
-        repeat: postExtrapolation.iterations,
+        repeat: postExtrapolation.repeat,
         repeatDelay: postExtrapolation.pause * duration,
         repeatMode: postExtrapolation.type === 'loop' ? 'loop' : postExtrapolation.flip === 'time' ? 'reverse' : 'mirror'
     } : {};

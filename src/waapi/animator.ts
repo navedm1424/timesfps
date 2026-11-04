@@ -1,8 +1,8 @@
 import {Animator} from "../animator.ts";
 import {type AnimatorOptions, resolveTargets, type Target} from "../dom/mapping.ts";
-import {plan} from "../resolution/plan.ts";
+import {plan} from "../plan.ts";
 import {naming} from "../naming.ts";
-import {TracksResolver} from "../resolution/tracks.ts";
+import {TracksResolver} from "../tracks/tracks.ts";
 import type {Definition} from "../sequence.ts";
 import {AnimationControls} from "./controls.ts";
 import {domValueResolver, keyframePropertyOf} from "./css-values.ts";

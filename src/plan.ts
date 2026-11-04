@@ -1,20 +1,20 @@
-import type {AnimationDefinition} from "../animation.ts";
-import {type EntrySpan, type PositionDescriptor, resolvePosition} from "../at.ts";
-import {type Target} from "../dom/mapping.ts";
-import type {Easing} from "../easing.ts";
-import type {RepeatOptions} from "../playback-options.ts";
-import {type Definition, SequenceDefinition, type SequenceDefinitionEntry} from "../sequence.ts";
-import {resolveTransition} from "../transition.ts";
-import type {TweenStops} from "../tween-stops.ts";
-import type {Seconds} from "../types.ts";
+import type {AnimationDefinition} from "./animation.ts";
+import {type EntrySpan, type PositionDescriptor, resolvePosition} from "./at.ts";
+import {type Target} from "./dom/mapping.ts";
+import type {Easing} from "./easing.ts";
+import type {RepeatOptions} from "./playback-options.ts";
+import {type Definition, SequenceDefinition, type SequenceDefinitionEntry} from "./sequence.ts";
+import {resolveTransition} from "./transition.ts";
+import type {TweenStops} from "./tween-stops.ts";
+import type {Seconds} from "./types.ts";
 
 /** Times are local to the sequence an entry is in, or start at 0 for the outermost definition. */
 interface EntryPlan {
     /** Where it starts, before its delay; what `<` refers to. */
     position: Seconds;
-    /** How long one play of an animation, or a sequence, lasts, without delays or repeats; an animation with no targets takes no time. */
-    playDuration: Seconds;
-    /** How it repeats after its first play; a sequence's is empty until sequences can repeat. */
+    /** How long one iteration of an animation, or a sequence, lasts, without delays or repeats; an animation with no targets takes no time. */
+    iterationDuration: Seconds;
+    /** How it repeats after its first iteration; a sequence's is empty until sequences can repeat. */
     repeatOptions: RepeatOptions;
 }
 
@@ -27,7 +27,7 @@ export interface StaggeredTarget {
 export interface AnimationPlan extends EntryPlan {
     type: 'animation';
     stopsByProperty: { readonly [property: string]: TweenStops };
-    /** The easing one play runs. */
+    /** The easing one iteration runs. */
     easing: Easing;
     targets: readonly StaggeredTarget[];
 }
@@ -56,7 +56,7 @@ abstract class EntryPlanner {
     protected entryPosition: Seconds = 0;
 
     protected constructor(
-        /** Its duration for positions, from its position to where `>` refers to: its delay and repeats included, of which an infinite repeat counts its first play only. */
+        /** Its duration for positions, from its position to where `>` refers to: its delay and repeats included, of which an infinite repeat counts its first iteration only. */
         protected readonly anchorDuration: Seconds
     ) {}
 
@@ -77,7 +77,7 @@ class AnimationPlanner extends EntryPlanner {
     private constructor(
         private readonly stopsByProperty: { readonly [property: string]: TweenStops },
         private readonly targets: readonly StaggeredTarget[],
-        private readonly playDuration: Seconds,
+        private readonly iterationDuration: Seconds,
         anchorDuration: Seconds,
         private readonly easing: Easing,
         private readonly repeatOptions: RepeatOptions
@@ -93,10 +93,10 @@ class AnimationPlanner extends EntryPlanner {
         const targets = elements.map((target, index): StaggeredTarget => ({target, delay: typeof delay === 'function' ? delay(index, count) : delay}));
 
         const {duration, easing} = resolveTransition(definition.timing.transition);
-        const playDuration = count ? duration : 0;
-        const anchorDuration = count ? Math.max(...targets.map(target => target.delay)) + anchoredPlaysDuration(playDuration, repeatOptions) : 0;
+        const iterationDuration = count ? duration : 0;
+        const anchorDuration = count ? Math.max(...targets.map(target => target.delay)) + anchoredIterationsDuration(iterationDuration, repeatOptions) : 0;
 
-        return new AnimationPlanner(definition.stopsByProperty, targets, playDuration, anchorDuration, easing, repeatOptions);
+        return new AnimationPlanner(definition.stopsByProperty, targets, iterationDuration, anchorDuration, easing, repeatOptions);
     }
 
     plan(): AnimationPlan {
@@ -106,7 +106,7 @@ class AnimationPlanner extends EntryPlanner {
             easing: this.easing,
             targets: this.targets,
             position: this.entryPosition,
-            playDuration: this.playDuration,
+            iterationDuration: this.iterationDuration,
             repeatOptions: this.repeatOptions
         };
     }
@@ -116,9 +116,9 @@ class AnimationPlanner extends EntryPlanner {
 class SequencePlanner extends EntryPlanner {
     private constructor(
         private readonly entries: ReadonlyMap<string, PlanNode>,
-        private readonly playDuration: Seconds
+        private readonly iterationDuration: Seconds
     ) {
-        super(playDuration);
+        super(iterationDuration);
     }
 
     /** Plans each entry once, at its position among the entries before it. */
@@ -131,8 +131,8 @@ class SequencePlanner extends EntryPlanner {
             entries.set(name, planner.plan());
         });
 
-        const playDuration = Math.max(0, ...[...entrySpans.values()].map(({start, duration}) => start + duration));
-        return new SequencePlanner(entries, playDuration);
+        const iterationDuration = Math.max(0, ...[...entrySpans.values()].map(({start, duration}) => start + duration));
+        return new SequencePlanner(entries, iterationDuration);
     }
 
     plan(): SequencePlan {
@@ -140,7 +140,7 @@ class SequencePlanner extends EntryPlanner {
             type: 'sequence',
             entries: this.entries,
             position: this.entryPosition,
-            playDuration: this.playDuration,
+            iterationDuration: this.iterationDuration,
             repeatOptions: {}
         };
     }
@@ -150,8 +150,8 @@ function entryPlannerOf(entry: SequenceDefinitionEntry, resolveTargets: TargetsR
     return 'sequence' in entry ? SequencePlanner.of(entry.sequence, resolveTargets) : AnimationPlanner.of(entry.animation, resolveTargets);
 }
 
-/** The plays and their repeat delays; only the first play when it repeats forever. */
-function anchoredPlaysDuration(playDuration: Seconds, {repeat = 0, repeatDelay = 0}: RepeatOptions): Seconds {
-    if (repeat === Infinity) return playDuration;
-    return playDuration * (repeat + 1) + repeatDelay * repeat;
+/** The iterations and their repeat delays; only the first iteration when it repeats forever. */
+function anchoredIterationsDuration(iterationDuration: Seconds, {repeat = 0, repeatDelay = 0}: RepeatOptions): Seconds {
+    if (repeat === Infinity) return iterationDuration;
+    return iterationDuration * (repeat + 1) + repeatDelay * repeat;
 }

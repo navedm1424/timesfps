@@ -2,7 +2,7 @@ import {describe, expect, it, vi} from "vitest";
 import {AnimationTiming} from "../src/animation-timing.ts";
 import {type At, parsePositionDescriptor, resolvePosition} from "../src/at.ts";
 import {animation, AnimationDefinition} from "../src/animation.ts";
-import {plan} from "../src/resolution/plan.ts";
+import {plan} from "../src/plan.ts";
 import {sequence, SequenceDefinition} from "../src/sequence.ts";
 import {SequenceTiming} from "../src/sequence-timing.ts";
 import {resolveTargets} from "../src/dom/mapping.ts";

@@ -34,6 +34,16 @@ export type SequenceMapping<Timing extends SequenceTiming = SequenceTiming> = Ti
     } :
     never;
 
+/** A value for each property of each element. */
+export type ByElementAndProperty<Value> = ReadonlyMap<Element, { readonly [property: string]: Value }>;
+
+/** The same elements and properties, each with its value transformed. */
+export function mapByElementAndProperty<From, To>(source: ByElementAndProperty<From>, transform: (value: From, element: Element, property: string) => To): ByElementAndProperty<To> {
+    return new Map([...source].map(([element, valuesByProperty]) => [element, Object.fromEntries(
+        Object.entries(valuesByProperty).map(([property, value]) => [property, transform(value, element, property)])
+    )]));
+}
+
 /** The target's elements, each once. */
 export function resolveTargets(target: Target, scope: Element): Element[] {
     const elementOrElements = typeof target === 'string'
