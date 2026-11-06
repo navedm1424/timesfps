@@ -5,16 +5,17 @@ import type {Seconds} from "../types.ts";
 import {groupBy} from "../utils/collections.ts";
 import {KeyedRamp} from "./keyed-ramps.ts";
 import {resolveMissingValues} from "./missing-values.ts";
-import {type PendingValue, type PlayTiming, repeatsForever, TrackEntryBuilder} from "./track-entry-builder.ts";
+import {repeats, repeatsForever, type TrackRunTiming} from "./track-entries.ts";
+import {type PendingValue, TrackEntryBuilder} from "./track-entry-builder.ts";
 import {laidOver} from "./track-layering.ts";
 
-/** An animation leaf's play of one property on one target. */
-export interface RawTrackEntry extends PlayTiming {
+/** An animation leaf's run of one property on one target. */
+export interface RawTrackEntry extends TrackRunTiming {
     path: EntryPath | undefined;
     easing: Easing;
     stops: TweenStops;
     /** The timings of the sequences around it, the outermost first. One sequence's entries share one, which stands for the sequence. */
-    ancestors: readonly PlayTiming[];
+    ancestors: readonly TrackRunTiming[];
 }
 
 /** An entry with no repeating sequence around it where it's grouped. */
@@ -26,7 +27,7 @@ interface EntryUnit {
 /** A repeating sequence, with its entries. */
 interface SequenceUnit {
     type: 'sequence';
-    sequence: PlayTiming;
+    sequence: TrackRunTiming;
     entries: readonly RawTrackEntry[];
 }
 
@@ -63,11 +64,11 @@ export class TrackEntryAssembler {
     }
 
     /** The builder of an entry's iteration, or of a repeating sequence's keyed ramp, that repeats as `timing` does: the unit's own by default. */
-    private builderOf(unit: RepeatUnit, timing: PlayTiming = timingOf(unit)): TrackEntryBuilder {
+    private builderOf(unit: RepeatUnit, timing: TrackRunTiming = timingOf(unit)): TrackEntryBuilder {
         if (unit.type === 'sequence')
             return TrackEntryBuilder.merged(this.nameOf(pathsOf(unit.entries)), timing, this.keyedRampOf(unit));
         const {path, easing, stops} = unit.entry;
-        return TrackEntryBuilder.play(this.naming.trackEntryNameOf(path), timing, easing, stops);
+        return TrackEntryBuilder.fromStops(this.naming.trackEntryNameOf(path), timing, easing, stops);
     }
 
     /**
@@ -88,9 +89,9 @@ export class TrackEntryAssembler {
  * The entries grouped by the repeating sequence right inside `sequence`, or by the outermost one without it, or by themselves without one,
  * each group where its first entry is.
  */
-function unitsIn(entries: readonly RawTrackEntry[], sequence?: PlayTiming): RepeatUnit[] {
-    const unitSequenceOf = ({ancestors}: RawTrackEntry): PlayTiming | undefined =>
-        (sequence ? ancestors.slice(ancestors.indexOf(sequence) + 1) : ancestors).find(isRepeating);
+function unitsIn(entries: readonly RawTrackEntry[], sequence?: TrackRunTiming): RepeatUnit[] {
+    const unitSequenceOf = ({ancestors}: RawTrackEntry): TrackRunTiming | undefined =>
+        (sequence ? ancestors.slice(ancestors.indexOf(sequence) + 1) : ancestors).find(repeats);
     return [...groupBy(entries, entry => unitSequenceOf(entry) ?? entry).values()].map((group): RepeatUnit => {
         const [first] = group;
         const unitSequence = unitSequenceOf(first!);
@@ -118,17 +119,13 @@ function byStart(first: { start: Seconds }, second: { start: Seconds }): number 
     return first.start - second.start;
 }
 
-function timingOf(unit: RepeatUnit): PlayTiming {
+function timingOf(unit: RepeatUnit): TrackRunTiming {
     return unit.type === 'entry' ? unit.entry : unit.sequence;
 }
 
 /** The timing without its repeats when it repeats forever, so it plays once. */
-function withoutRepeatingForever(timing: PlayTiming): PlayTiming {
-    return repeatsForever(timing) ? {...timing, repeatOptions: {}} : timing;
-}
-
-function isRepeating({repeatOptions: {repeat = 0}}: PlayTiming): boolean {
-    return repeat > 0;
+function withoutRepeatingForever(timing: TrackRunTiming): TrackRunTiming {
+    return repeatsForever(timing) ? {start: timing.start, duration: timing.duration, repeatCount: 0, repeatDelay: 0} : timing;
 }
 
 function pathsOf(entries: readonly RawTrackEntry[]): EntryPath[] {

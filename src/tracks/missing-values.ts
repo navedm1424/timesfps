@@ -56,7 +56,7 @@ class MissingValuesResolver {
     private landStart(builder: TrackEntryBuilder): void {
         const landing = this.landingAt(builder.start);
         if (landing)
-            builder.assignStartValue(landing.valueAt(builder.start));
+            builder.assignStartValueIfMissing(landing.valueAt(builder.start));
         else if (builder.hasMissingStartValue)
             this.startNeighbors.set(builder, this.closestBelow(builder, replacesStartNeighbor));
     }
@@ -65,24 +65,24 @@ class MissingValuesResolver {
     private landEnd(builder: TrackEntryBuilder): void {
         const landing = this.landingAt(builder.end);
         if (landing)
-            builder.assignEndValue(landing.valueAt(builder.end));
+            builder.assignEndValueIfMissing(landing.valueAt(builder.end));
         else if (builder.hasMissingEndValue)
             this.endNeighbors.set(builder, this.closestBelow(builder, replacesEndNeighbor));
     }
 
     private assignNeighborValues(): void {
         for (const [builder, neighbor] of this.startNeighbors)
-            if (neighbor) builder.assignStartValue(neighbor.endValue);
+            if (neighbor) builder.assignStartValueIfMissing(neighbor.endValue);
         for (const [builder, neighbor] of this.endNeighbors)
-            if (neighbor) builder.assignEndValue(neighbor.valueAt(neighbor.start));
+            if (neighbor) builder.assignEndValueIfMissing(neighbor.valueAt(neighbor.start));
     }
 
     /** A value still missing after its neighbor's, because the neighbor's is missing too, takes the current value. */
     private assignCurrentValues(): void {
         for (const [builder, neighbor] of this.startNeighbors)
-            if (neighbor && builder.hasMissingStartValue) builder.assignStartValue(currentValueToken);
+            if (neighbor) builder.assignStartValueIfMissing(currentValueToken);
         for (const [builder, neighbor] of this.endNeighbors)
-            if (neighbor && builder.hasMissingEndValue) builder.assignEndValue(currentValueToken);
+            if (neighbor) builder.assignEndValueIfMissing(currentValueToken);
     }
 
     /** The topmost one running at `time`. */

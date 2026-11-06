@@ -14,7 +14,7 @@ import {checkNumber} from "./utils/validation.ts";
 /** A transition with the options of its timing spread into it. */
 export type AnimationTimingOptions = TransitionOptions & PlaybackOptions;
 
-/** One play through the transition, with its delay and repeats. */
+/** One run through the transition, with its delay and repeats. */
 export class AnimationTiming {
     readonly playback: PlaybackDescriptor;
 

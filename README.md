@@ -3,8 +3,8 @@
 `timesfps` is a TypeScript library for designing animations that play natively in the browser.
 
 - **Truly fluid native springs.** Springs are fitted as cubic Béziers that follow the real motion within 0.1%, not sampled into `linear()` approximations.
-- **Yoyo and mirror repeats.** Every other play runs backwards (`reverse`), or swaps its values while its easing keeps running forwards (`mirror`).
-- **Repeat delays** between an animation's plays.
+- **Yoyo and mirror repeats.** Every other iteration runs backwards (`reverse`), or swaps its values while its easing keeps running forwards (`mirror`).
+- **Repeat delays** between an animation's iterations.
 
 It's built on the Web Animations API. You describe an animation once and map it onto elements and CSS values, and it runs as native animations, with no JavaScript per frame.
 
@@ -167,7 +167,7 @@ animation('.card', {'--y': {0: '20px', 1: '0px'}}, {duration: 0.6, bounce: 0.2})
 
 ### Timing
 
-The third argument is the timing: a **transition**, which shapes one play, with the **playback options** spread into it.
+The third argument is the timing: a **transition**, which shapes one iteration, with the **playback options** spread into it.
 
 ```ts
 {duration: 0.4, easing: 'easeOut', delay: 0.1, repeat: 2, repeatMode: 'reverse'}
@@ -224,12 +224,12 @@ Springs come in three kinds. You pick one by the fields you give, and each works
 
 | Option | Meaning | Default |
 |---|---|---|
-| `delay` | Seconds before the first play, or a stagger. It isn't repeated. | `0` |
-| `repeat` | Plays after the first. `Infinity` repeats forever. | `0` |
-| `repeatDelay` | Seconds between plays, never after the last. | `0` |
-| `repeatMode` | How every other play runs. | `'loop'` |
+| `delay` | Seconds before the first iteration, or a stagger. It isn't repeated. | `0` |
+| `repeat` | Iterations after the first. `Infinity` repeats forever. | `0` |
+| `repeatDelay` | Seconds between iterations, never after the last. | `0` |
+| `repeatMode` | How every other iteration runs. | `'loop'` |
 
-| `repeatMode` | Every other play |
+| `repeatMode` | Every other iteration |
 |---|---|
 | `'loop'` | starts from the beginning again. |
 | `'reverse'` | runs backwards in time, easing included. |
@@ -344,7 +344,7 @@ An entry's `at` says when it starts: a **reference point**, then up to three **o
 **Rules.**
 
 - Before the first entry, the previous entry and everything so far are the start of the sequence, with a duration of 0.
-- An entry that repeats forever counts as ending after its first play.
+- An entry that repeats forever counts as ending after its first iteration.
 - A position that lands before the start of the sequence starts at its start.
 
 **These throw** when you add the entry to a `SequenceTiming` builder, or when you build a `sequence()`:
@@ -576,7 +576,7 @@ animator().animate(element, {opacity: [0, 1]}, {duration: 0.4, easing: 'easeOut'
 | Milliseconds | Seconds |
 | `easing: 'ease-out'` | `easing: 'easeOut'` |
 | `'cubic-bezier(…)'`, `'steps(4, jump-start)'` | `[x1, y1, x2, y2]`, `[4, 'jumpStart']` |
-| `iterations: 3` | `repeat: 2`, the plays after the first |
+| `iterations: 3` | `repeat: 2`, the iterations after the first |
 | `iterations: Infinity` | `repeat: Infinity` |
 | `direction: 'alternate'` | `repeatMode: 'reverse'` |
 | Keyframe `offset` | progress keys, which mean the same: positions along the eased progress |

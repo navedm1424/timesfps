@@ -1,7 +1,6 @@
 import {type ByElementAndProperty, mapByElementAndProperty} from "../dom/mapping.ts";
-import type {RepeatOptions} from "../playback-options.ts";
 import {KeyedRamp} from "../tracks/keyed-ramps.ts";
-import type {TrackEntry} from "../tracks/track-entries.ts";
+import type {TrackEntry, TrackRunTiming} from "../tracks/track-entries.ts";
 import type {Tracks} from "../tracks/tracks.ts";
 import type {TrackValue} from "../tracks/track-values.ts";
 import type {Seconds} from "../types.ts";
@@ -87,20 +86,14 @@ function givenValuesOf(value: TrackValue): TrackValue[] {
 }
 
 /**
- * The entry's extrapolations as WAAPI timing, in as many effects as it takes, each later by the entry's start.
+ * The entry's run as WAAPI timing, in as many effects as it takes, each later by the entry's start.
  * The first effect holds before it when the entry does, and every effect holds after it when the entry does.
  */
-function nativeTimingOf({start, duration, keyedRamp, preExtrapolation, postExtrapolation}: TrackEntry): PlacedEffect[] {
-    const repeatOptions: RepeatOptions = postExtrapolation && postExtrapolation.type !== 'hold' ? {
-        repeat: postExtrapolation.repeat,
-        repeatDelay: postExtrapolation.pause * duration,
-        repeatMode: postExtrapolation.type === 'loop' ? 'loop' : postExtrapolation.flip === 'time' ? 'reverse' : 'mirror'
-    } : {};
-    const holdsAfter = postExtrapolation !== undefined && (postExtrapolation.type === 'hold' || postExtrapolation.holdsAfter);
-
-    return nativelyRepeated(keyedRamp, duration, repeatOptions).map((timing, index): PlacedEffect => {
-        const holdsBefore = index === 0 && preExtrapolation !== undefined;
-        const fill: FillMode = holdsBefore && holdsAfter ? 'both' : holdsBefore ? 'backwards' : holdsAfter ? 'forwards' : 'none';
+function nativeTimingOf(entry: TrackEntry): PlacedEffect[] {
+    const {start, keyedRamp, holdsBefore, holdsAfter} = entry;
+    return nativelyRepeated(keyedRamp, entry).map((timing, index): PlacedEffect => {
+        const fillsBackwards = index === 0 && holdsBefore;
+        const fill: FillMode = fillsBackwards && holdsAfter ? 'both' : fillsBackwards ? 'backwards' : holdsAfter ? 'forwards' : 'none';
         return {...timing, delay: start + timing.delay, fill};
     });
 }
@@ -110,23 +103,22 @@ function timingOf(ramp: KeyedRamp<TrackValue>, iterations = 1, direction: Playba
 }
 
 /** The repeat as WAAPI iterations, the first effect starting at the ramp's start. */
-function nativelyRepeated(ramp: KeyedRamp<TrackValue>, iterationDuration: Seconds, options: RepeatOptions): EffectTiming[] {
-    const {repeat: repeatCount = 0, repeatDelay = 0, repeatMode = 'loop'} = options;
+function nativelyRepeated(ramp: KeyedRamp<TrackValue>, {duration: iterationDuration, repeatCount, repeatDelay, oscillate}: Omit<TrackRunTiming, 'start'>): EffectTiming[] {
     const period = iterationDuration + repeatDelay;
     const repeatsForever = !Number.isFinite(repeatCount);
     const playCount = repeatCount + 1;
-    const iteration = (index: number) => ramp.iteration(index, iterationDuration, options);
+    const iteration = (index: number) => ramp.iteration(index, iterationDuration, repeatDelay, oscillate);
 
     // ramp
     if (repeatCount === 0)
         return [timingOf(ramp)];
 
-    // ramp × playCount, alternating for 'reverse'
-    if (repeatMode !== 'mirror' && repeatDelay === 0 && ramp.start === 0 && ramp.end === iterationDuration)
-        return [timingOf(ramp, playCount, repeatMode === 'reverse' ? 'alternate' : 'normal')];
+    // ramp × playCount, alternating when it oscillates in time
+    if (oscillate !== 'values' && repeatDelay === 0 && ramp.start === 0 && ramp.end === iterationDuration)
+        return [timingOf(ramp, playCount, oscillate === 'time' ? 'alternate' : 'normal')];
 
     // [ramp+hold] × repeatCount, then ramp on its own; [ramp+hold] × ∞ when repeating forever
-    if (repeatMode === 'loop') {
+    if (!oscillate) {
         const repeating = timingOf(ramp.heldUntil(ramp.start + period), repeatCount);
         return repeatsForever ? [repeating] : [repeating, timingOf(iteration(repeatCount))];
     }

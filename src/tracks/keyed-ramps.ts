@@ -1,7 +1,6 @@
 import type {Easing} from "../easing.ts";
 import {linear} from "../easing-specifier.ts";
 import type {Progress, Seconds} from "../types.ts";
-import type {RepeatOptions} from "../playback-options.ts";
 import {partitionPoint} from "../utils/collections.ts";
 import {clamp, invLerp} from "../utils/math.ts";
 import {type InterpolatedValueToken, interpolatedValueOf} from "./track-values.ts";
@@ -76,11 +75,17 @@ export function endValueOf<Value>({easing, stops}: TrackSpan<Value>): Value | In
     return stops.valueAt(easing.endProgress);
 }
 
+/**
+ * What every other iteration of an oscillating repeat flips: its time, so it plays backwards,
+ * or its values, so it runs from the end values to the start ones with its easing forwards.
+ */
+export type Oscillation = 'time' | 'values';
+
 /** Spans laid out one after another, without gaps. */
 export class KeyedRamp<Value> {
     constructor(readonly spans: readonly TrackSpan<Value>[]) {}
 
-    static play<Value>(duration: Seconds, easing: Easing, stops: TrackStops<Value>): KeyedRamp<Value> {
+    static ofSpan<Value>(duration: Seconds, easing: Easing, stops: TrackStops<Value>): KeyedRamp<Value> {
         return new KeyedRamp([{start: 0, end: duration, easing, stops}]);
     }
 
@@ -160,18 +165,18 @@ export class KeyedRamp<Value> {
     }
 
     /**
-     * The ramp in the iteration at `index` of a repeat whose iterations last `iterationDuration`, each starting after the previous one and the repeat delay.
-     * Every other iteration of a reverse or a mirror flips in time: a reverse runs the easing backwards, a mirror keeps it running forwards through flipped stops.
+     * The ramp in the iteration at `index` of a repeat whose iterations last `iterationDuration`, each starting `repeatDelay` after the previous one ends.
+     * Every other iteration of an oscillation is laid out back to front: one that flips its time runs the easing backwards, and one that flips its values keeps it running forwards through flipped stops.
      */
-    iteration(index: number, iterationDuration: Seconds, {repeatDelay = 0, repeatMode = 'loop'}: RepeatOptions): KeyedRamp<Value> {
+    iteration(index: number, iterationDuration: Seconds, repeatDelay: Seconds, oscillate?: Oscillation): KeyedRamp<Value> {
         const iterationStart = index * (iterationDuration + repeatDelay);
-        if (index % 2 === 0 || repeatMode === 'loop') return this.shifted(iterationStart);
+        if (index % 2 === 0 || !oscillate) return this.shifted(iterationStart);
 
         const flipped = this.spans.map(({start, end, easing, stops}): TrackSpan<Value> => ({
             start: iterationDuration - end,
             end: iterationDuration - start,
-            easing: repeatMode === 'reverse' ? easing.reverse() : easing,
-            stops: repeatMode === 'reverse' ? stops : stops.reverse()
+            easing: oscillate === 'time' ? easing.reverse() : easing,
+            stops: oscillate === 'time' ? stops : stops.reverse()
         }));
         return new KeyedRamp(flipped.reverse()).shifted(iterationStart);
     }

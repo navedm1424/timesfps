@@ -1,11 +1,12 @@
 import {type ByElementAndProperty, mapByElementAndProperty} from "../dom/mapping.ts";
 import type {EntryPath, Naming} from "../naming.ts";
+import type {RepeatOptions} from "../playback-options.ts";
 import type {Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import type {AnimationPlan, PlanNode, SequencePlan} from "../plan.ts";
-import type {TrackEntry} from "./track-entries.ts";
+import type {Oscillation} from "./keyed-ramps.ts";
+import type {TrackEntry, TrackRunTiming} from "./track-entries.ts";
 import {type RawTrackEntry, TrackEntryAssembler} from "./track-entry-assembler.ts";
-import type {PlayTiming} from "./track-entry-builder.ts";
 import {layeredEntriesOf} from "./track-layering.ts";
 
 /** Its entries in the order they show over each other in: by when they start, then in the order they're declared; a merged entry's continuations of what in it repeats forever come right under it. */
@@ -30,7 +31,7 @@ export class TracksResolver {
     }
 
     /** Adds an animation or a sequence, which starts at its position after the start of the sequence it's in. */
-    private addNode(node: PlanNode, ancestors: readonly PlayTiming[], path?: EntryPath): void {
+    private addNode(node: PlanNode, ancestors: readonly TrackRunTiming[], path?: EntryPath): void {
         const start = (ancestors.at(-1)?.start ?? 0) + node.position;
         if (node.type === 'sequence')
             this.addSequence(node, start, ancestors, path);
@@ -39,18 +40,18 @@ export class TracksResolver {
     }
 
     /** Adds its entries in their order, with the timings of the sequences around them: the ones around it, the outermost first, then its own, which starts `start` after the outermost definition starts. */
-    private addSequence({entries, iterationDuration, repeatOptions}: SequencePlan, start: Seconds, ancestors: readonly PlayTiming[], path?: EntryPath): void {
-        const timing: PlayTiming = {start, duration: iterationDuration, repeatOptions};
-        const entryAncestors = [...ancestors, timing];
+    private addSequence({entries, iterationDuration, repeatOptions}: SequencePlan, start: Seconds, ancestors: readonly TrackRunTiming[], path?: EntryPath): void {
+        const entryAncestors = [...ancestors, trackRunTimingOf(start, iterationDuration, repeatOptions)];
         for (const [name, entryPlan] of entries)
             this.addNode(entryPlan, entryAncestors, this.naming.entryPathOf(path, name));
     }
 
-    /** Adds a play of each property on each target, `start` and the target's delay after the outermost definition starts. */
-    private addAnimation({stopsByProperty, easing, iterationDuration, repeatOptions, targets}: AnimationPlan, start: Seconds, ancestors: readonly PlayTiming[], path?: EntryPath): void {
+    /** Adds a run of each property on each target, `start` and the target's delay after the outermost definition starts. */
+    private addAnimation({stopsByProperty, easing, iterationDuration, repeatOptions, targets}: AnimationPlan, start: Seconds, ancestors: readonly TrackRunTiming[], path?: EntryPath): void {
         for (const {target, delay} of targets) {
+            const timing = trackRunTimingOf(start + delay, iterationDuration, repeatOptions);
             for (const [property, stops] of Object.entries(stopsByProperty))
-                this.trackBuilderOf(target, property).add({path, start: start + delay, duration: iterationDuration, easing, stops, repeatOptions, ancestors});
+                this.trackBuilderOf(target, property).add({path, ...timing, easing, stops, ancestors});
         }
     }
 
@@ -58,6 +59,13 @@ export class TracksResolver {
         const buildersByProperty = getOrInsertComputed(this.buildersByTarget, target, () => ({}));
         return buildersByProperty[property] ??= new TrackBuilder(this.assembler);
     }
+}
+
+/** The run of what starts at `start` and repeats iterations of `duration` as `repeatOptions` say; one without duration doesn't repeat. */
+function trackRunTimingOf(start: Seconds, duration: Seconds, {repeat = 0, repeatDelay = 0, repeatMode = 'loop'}: RepeatOptions): TrackRunTiming {
+    if (duration === 0 || repeat === 0) return {start, duration, repeatCount: 0, repeatDelay: 0};
+    const oscillate: Oscillation | undefined = repeatMode === 'reverse' ? 'time' : repeatMode === 'mirror' ? 'values' : undefined;
+    return {start, duration, repeatCount: repeat, repeatDelay, ...(oscillate && {oscillate})};
 }
 
 /** The entries that animate one property of one target, built into its track once they're all added. */

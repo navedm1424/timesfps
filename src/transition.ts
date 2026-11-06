@@ -129,7 +129,7 @@ function checkBounce(bounce: number | undefined, label: string): void {
         throw new RangeError(`${label}'s bounce must be between -1 and 1, not ${bounce}.`);
 }
 
-/** A transition as it plays: how long one play lasts, and the easing it runs. */
+/** A transition as it plays: how long one iteration lasts, and the easing it runs. */
 export interface TransitionDescriptor {
     duration: Seconds;
     easing: Easing;
@@ -137,7 +137,7 @@ export interface TransitionDescriptor {
 
 const resolvedTransitions = new WeakMap<TransitionOptions, TransitionDescriptor>();
 
-/** How long one play of the transition lasts, and the easing it runs; each transition is resolved once. */
+/** How long one iteration of the transition lasts, and the easing it runs; each transition is resolved once. */
 export function resolveTransition(transition: TransitionOptions): TransitionDescriptor {
     let resolved = resolvedTransitions.get(transition);
     if (!resolved) resolvedTransitions.set(transition, resolved = resolvedTransitionOf(transition));

@@ -699,13 +699,13 @@ describe("NativeEffectsResolver repeating sequences", () => {
 
 describe("layeredEntriesOf", () => {
     const builderOf = (name: string, start: Seconds, duration: Seconds) =>
-        TrackEntryBuilder.play(name, {start, duration, repeatOptions: {}}, linear, TweenStops.of('x', {0: 0, 1: 1}));
+        TrackEntryBuilder.fromStops(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
 
     it("holds an entry after it ends when the one under its end never shows", () => {
         const entries = layeredEntriesOf([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
-        expect(entries.map(({name, postExtrapolation}) => ({name, postExtrapolation}))).toEqual([
-            {name: 'b', postExtrapolation: {type: 'hold'}},
-            {name: 'c', postExtrapolation: {type: 'hold'}}
+        expect(entries.map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
+            {name: 'b', holdsAfter: true},
+            {name: 'c', holdsAfter: true}
         ]);
     });
 });
