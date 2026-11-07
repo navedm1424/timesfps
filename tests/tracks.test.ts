@@ -17,8 +17,8 @@ import type {NativeAnimationEffect, NativeKeyframe} from "../src/waapi/native-ef
 import {cssEasingOf, type NativeEasing} from "../src/waapi/native-easing.ts";
 import {alignNumbers, type CSSValueResolver} from "../src/waapi/css-values.ts";
 import {naming, type EntryPath} from "../src/naming.ts";
-import {TrackEntryBuilder} from "../src/tracks/track-entry-builder.ts";
-import {layeredEntriesOf} from "../src/tracks/track-layering.ts";
+import {TrackRunBuilder} from "../src/tracks/track-run-builder.ts";
+import {layeredRunsOf} from "../src/tracks/track-layering.ts";
 import {TracksResolver} from "../src/tracks/tracks.ts";
 import {TweenStops} from "../src/tween-stops.ts";
 import {type AnimationTracks, NativeEffectsResolver} from "../src/waapi/tracks.ts";
@@ -697,13 +697,13 @@ describe("NativeEffectsResolver repeating sequences", () => {
     });
 });
 
-describe("layeredEntriesOf", () => {
+describe("layeredRunsOf", () => {
     const builderOf = (name: string, start: Seconds, duration: Seconds) =>
-        TrackEntryBuilder.fromStops(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
+        TrackRunBuilder.fromStops(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
 
-    it("holds an entry after it ends when the one under its end never shows", () => {
-        const entries = layeredEntriesOf([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
-        expect(entries.map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
+    it("holds a run after it ends when the one under its end never shows", () => {
+        const runs = layeredRunsOf([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
+        expect(runs.map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
             {name: 'b', holdsAfter: true},
             {name: 'c', holdsAfter: true}
         ]);

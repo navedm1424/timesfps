@@ -4,18 +4,18 @@ import type {RepeatOptions} from "../playback-options.ts";
 import type {Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import type {AnimationPlan, PlanNode, SequencePlan} from "../plan.ts";
-import type {Oscillation} from "./keyed-ramps.ts";
-import type {TrackEntry, TrackRunTiming} from "./track-entries.ts";
-import {type RawTrackEntry, TrackEntryAssembler} from "./track-entry-assembler.ts";
-import {layeredEntriesOf} from "./track-layering.ts";
+import {type TrackEntry, TrackEntryAssembler} from "./track-entry-assembler.ts";
+import {layeredRunsOf} from "./track-layering.ts";
+import type {Oscillation, TrackRun, TrackRunTiming} from "./track-runs.ts";
+import type {TrackValue} from "./track-values.ts";
 
-/** Its entries in the order they show over each other in: by when they start, then in the order they're declared; a merged entry's continuations of what in it repeats forever come right under it. */
-export type Track = readonly TrackEntry[];
+/** Its runs in the order they show over each other in: by when they start, then in the order they're declared; a merged run's continuations of what in it repeats forever come right under it. */
+export type Track = readonly TrackRun<TrackValue>[];
 
 /** Each target's tracks by property: what every animation leaf plays on it, laid out in time. */
 export type Tracks = ByElementAndProperty<Track>;
 
-/** Lays its plan out in tracks, naming their entries by `naming`. */
+/** Lays its plan out in tracks, naming their runs by `naming`. */
 export class TracksResolver {
     private readonly buildersByTarget = new Map<Element, { [property: string]: TrackBuilder }>();
     private readonly assembler: TrackEntryAssembler;
@@ -70,16 +70,16 @@ function trackRunTimingOf(start: Seconds, duration: Seconds, {repeat = 0, repeat
 
 /** The entries that animate one property of one target, built into its track once they're all added. */
 class TrackBuilder {
-    private readonly entries: RawTrackEntry[] = [];
+    private readonly entries: TrackEntry[] = [];
 
     constructor(private readonly assembler: TrackEntryAssembler) {}
 
-    add(entry: RawTrackEntry): void {
+    add(entry: TrackEntry): void {
         this.entries.push(entry);
     }
 
-    /** Lays the entries' builders over each other in stacking order, and builds the track entries of the ones that show. */
+    /** Lays the entries' builders over each other in stacking order, and builds the track runs of the ones that show. */
     build(): Track {
-        return layeredEntriesOf(this.assembler.assemble(this.entries));
+        return layeredRunsOf(this.assembler.assemble(this.entries));
     }
 }

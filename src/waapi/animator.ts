@@ -39,7 +39,7 @@ export class WAAPIAnimator extends Animator {
         return new AnimationControls(WAAPIAnimator.nativeAnimationsOf(tracks));
     }
 
-    /** Creates the effects in their tracks' order, which is the order they show over each other in; each is named by its track entry and its property. */
+    /** Creates the effects in their tracks' order, which is the order they show over each other in; each is named by its track run and its property. */
     private static nativeAnimationsOf(tracks: AnimationTracks): Animation[] {
         return [...tracks].flatMap(([element, effectsByProperty]) => Object.entries(effectsByProperty).flatMap(([property, effects]) => {
             const keyframeProperty = keyframePropertyOf(property);

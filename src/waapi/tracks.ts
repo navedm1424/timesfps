@@ -1,6 +1,5 @@
 import {type ByElementAndProperty, mapByElementAndProperty} from "../dom/mapping.ts";
-import {KeyedRamp} from "../tracks/keyed-ramps.ts";
-import type {TrackEntry, TrackRunTiming} from "../tracks/track-entries.ts";
+import type {TrackRun, TrackRunSpan} from "../tracks/track-runs.ts";
 import type {Tracks} from "../tracks/tracks.ts";
 import type {TrackValue} from "../tracks/track-values.ts";
 import type {Seconds} from "../types.ts";
@@ -19,22 +18,22 @@ export interface PlacedEffect {
     direction: PlaybackDirection;
     fill: FillMode;
     /** In the time of one iteration, from 0 to `duration`. */
-    ramp: KeyedRamp<TrackValue>;
+    spans: readonly TrackRunSpan<TrackValue>[];
 }
 
-type EffectTiming = Pick<PlacedEffect, 'delay' | 'duration' | 'iterations' | 'direction' | 'ramp'>;
+type EffectTiming = Pick<PlacedEffect, 'delay' | 'duration' | 'iterations' | 'direction' | 'spans'>;
 
 /**
  * Turns tracks into WAAPI effects, in their tracks' order.
- * Each entry's extrapolations become iterations, or keyframes where WAAPI can't repeat them.
+ * Each run's repeats become iterations, or keyframes where WAAPI can't repeat them.
  * Its values become CSS text, every given one checked, and then its easings become native ones.
  */
 export class NativeEffectsResolver {
     static resolve(tracks: Tracks, valueResolver: CSSValueResolver): AnimationTracks {
         return mapByElementAndProperty(tracks, (track, element, property) => {
             const texts = new TrackValueTexts(valueResolver, element, property);
-            for (const {keyedRamp} of track) texts.checkGivenValuesOf(keyedRamp);
-            return track.flatMap(entry => nativeTimingOf(entry).map(effect => nativeEffectOf(effect, entry.name, texts.textOf)));
+            for (const run of track) texts.checkGivenValuesOf(run);
+            return track.flatMap(run => nativeTimingOf(run).map(effect => nativeEffectOf(effect, run.name, texts.textOf)));
         });
     }
 }
@@ -54,10 +53,10 @@ class TrackValueTexts {
         return text;
     };
 
-    /** Throws for a given value of the ramp that the property doesn't take, whether a keyframe shows it or not. */
-    checkGivenValuesOf(ramp: KeyedRamp<TrackValue>): void {
-        for (const {stops} of ramp.spans) {
-            for (const {value} of stops.stops) {
+    /** Throws for a given value of the run that the property doesn't take, whether a keyframe shows it or not. */
+    checkGivenValuesOf(run: TrackRun<TrackValue>): void {
+        for (const {stops} of run.spans) {
+            for (const {value} of stops) {
                 for (const givenValue of givenValuesOf(value)) this.textOf(givenValue);
             }
         }
@@ -86,60 +85,61 @@ function givenValuesOf(value: TrackValue): TrackValue[] {
 }
 
 /**
- * The entry's run as WAAPI timing, in as many effects as it takes, each later by the entry's start.
- * The first effect holds before it when the entry does, and every effect holds after it when the entry does.
+ * The run as WAAPI timing, in as many effects as it takes.
+ * The first effect holds before it when the run does, and every effect holds after it when the run does.
  */
-function nativeTimingOf(entry: TrackEntry): PlacedEffect[] {
-    const {start, keyedRamp, holdsBefore, holdsAfter} = entry;
-    return nativelyRepeated(keyedRamp, entry).map((timing, index): PlacedEffect => {
+function nativeTimingOf(run: TrackRun<TrackValue>): PlacedEffect[] {
+    const {holdsBefore, holdsAfter} = run;
+    return nativelyRepeated(run).map((timing, index): PlacedEffect => {
         const fillsBackwards = index === 0 && holdsBefore;
         const fill: FillMode = fillsBackwards && holdsAfter ? 'both' : fillsBackwards ? 'backwards' : holdsAfter ? 'forwards' : 'none';
-        return {...timing, delay: start + timing.delay, fill};
+        return {...timing, fill};
     });
 }
 
-function timingOf(ramp: KeyedRamp<TrackValue>, iterations = 1, direction: PlaybackDirection = 'normal'): EffectTiming {
-    return {ramp: ramp.shifted(-ramp.start), delay: ramp.start, duration: ramp.end - ramp.start, iterations, direction};
+/** The timing of an effect that plays the spans, from where they start. */
+function timingOf(spans: readonly TrackRunSpan<TrackValue>[], iterations = 1, direction: PlaybackDirection = 'normal'): EffectTiming {
+    const start = spans[0]!.start;
+    return {spans: spans.map(span => span.shifted(-start)), delay: start, duration: spans.at(-1)!.end - start, iterations, direction};
 }
 
-/** The repeat as WAAPI iterations, the first effect starting at the ramp's start. */
-function nativelyRepeated(ramp: KeyedRamp<TrackValue>, {duration: iterationDuration, repeatCount, repeatDelay, oscillate}: Omit<TrackRunTiming, 'start'>): EffectTiming[] {
-    const period = iterationDuration + repeatDelay;
+/** The run's repeats as WAAPI iterations. */
+function nativelyRepeated(run: TrackRun<TrackValue>): EffectTiming[] {
+    const {timing: {duration: iterationDuration, repeatCount, repeatDelay, oscillate}, spans} = run;
     const repeatsForever = !Number.isFinite(repeatCount);
     const playCount = repeatCount + 1;
-    const iteration = (index: number) => ramp.iteration(index, iterationDuration, repeatDelay, oscillate);
+    const iteration = (index: number) => run.iterationSpans(index, index);
 
-    // ramp
+    // iteration
     if (repeatCount === 0)
-        return [timingOf(ramp)];
+        return [timingOf(iteration(0))];
 
-    // ramp × playCount, alternating when it oscillates in time
-    if (oscillate !== 'values' && repeatDelay === 0 && ramp.start === 0 && ramp.end === iterationDuration)
-        return [timingOf(ramp, playCount, oscillate === 'time' ? 'alternate' : 'normal')];
+    // iteration × playCount, alternating when it oscillates in time
+    if (oscillate !== 'values' && repeatDelay === 0 && spans[0]!.start === 0 && spans.at(-1)!.end === iterationDuration)
+        return [timingOf(iteration(0), playCount, oscillate === 'time' ? 'alternate' : 'normal')];
 
-    // [ramp+hold] × repeatCount, then ramp on its own; [ramp+hold] × ∞ when repeating forever
+    // [iteration+hold] × repeatCount, then iteration on its own; [iteration+hold] × ∞ when repeating forever
     if (!oscillate) {
-        const repeating = timingOf(ramp.heldUntil(ramp.start + period), repeatCount);
+        const repeating = timingOf(run.iterationSpans(0, 0, {heldUntilNext: true}), repeatCount);
         return repeatsForever ? [repeating] : [repeating, timingOf(iteration(repeatCount))];
     }
 
-    const repeatingPairs = (iterations: number) =>
-        timingOf(KeyedRamp.joined([iteration(0), iteration(1)]).heldUntil(ramp.start + 2 * period), iterations);
+    const repeatingPairs = (iterations: number) => timingOf(run.iterationSpans(0, 1, {heldUntilNext: true}), iterations);
 
-    // [ramp+hold, flipped+hold] × ∞
+    // [iteration+hold, flipped+hold] × ∞
     if (repeatsForever)
         return [repeatingPairs(Infinity)];
 
-    // [ramp+hold, flipped+hold] × repeatCount/2, then ramp on its own
+    // [iteration+hold, flipped+hold] × repeatCount/2, then iteration on its own
     if (playCount % 2 === 1)
         return [repeatingPairs(repeatCount / 2), timingOf(iteration(repeatCount))];
 
-    const finalPair = timingOf(KeyedRamp.joined([iteration(repeatCount - 1), iteration(repeatCount)]));
+    const finalPair = timingOf(run.iterationSpans(repeatCount - 1, repeatCount));
 
-    // [ramp+hold, flipped] on its own
+    // [iteration+hold, flipped] on its own
     if (playCount === 2)
         return [finalPair];
 
-    // [ramp+hold, flipped+hold] × (repeatCount−1)/2, then [ramp+hold, flipped] on its own
+    // [iteration+hold, flipped+hold] × (repeatCount−1)/2, then [iteration+hold, flipped] on its own
     return [repeatingPairs((repeatCount - 1) / 2), finalPair];
 }
