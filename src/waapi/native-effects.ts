@@ -3,7 +3,7 @@ import {CubicBezierEasing, type CubicBezierEasingParams, type Easing, LinearEasi
 import {linear} from "../easing-specifier.ts";
 import type {DampedSpring} from "../damped-spring.ts";
 import type {TrackRunSpan} from "../tracks/track-runs.ts";
-import {interpolatedValueOf, type TrackValue} from "../tracks/track-values.ts";
+import {type TrackValue, valueBetween} from "../tracks/track-values.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {clamp, invLerp, lerp} from "../utils/math.ts";
 import {sortedEntriesOf} from "../utils/records.ts";
@@ -199,8 +199,8 @@ function splitAtStops({startOffset, endOffset, easing, fromProgress, toProgress}
             return {
                 startOffset: segmentOffsetOf(previous.offset),
                 endOffset: segmentOffsetOf(piece.offset),
-                startValue: interpolatedValueOf(start.value, end.value, previous.progress),
-                endValue: interpolatedValueOf(start.value, end.value, piece.progress),
+                startValue: valueBetween(start.value, end.value, previous.progress),
+                endValue: valueBetween(start.value, end.value, piece.progress),
                 ...(piece.easing && {easing: piece.easing})
             };
         });

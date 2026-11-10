@@ -81,7 +81,7 @@ class TrackValueTexts {
 /** The given values a value is made of. */
 function givenValuesOf(value: TrackValue): TrackValue[] {
     if (typeof value !== 'object') return [value];
-    return value.type === 'interpolated' ? [...givenValuesOf(value.from), ...givenValuesOf(value.to)] : [];
+    return value.type === 'interpolation' ? [...givenValuesOf(value.from), ...givenValuesOf(value.to)] : [];
 }
 
 /**
@@ -100,7 +100,7 @@ function nativeTimingOf(run: TrackRun<TrackValue>): PlacedEffect[] {
 /** The timing of an effect that plays the spans, from where they start. */
 function timingOf(spans: readonly TrackRunSpan<TrackValue>[], iterations = 1, direction: PlaybackDirection = 'normal'): EffectTiming {
     const start = spans[0]!.start;
-    return {spans: spans.map(span => span.shifted(-start)), delay: start, duration: spans.at(-1)!.end - start, iterations, direction};
+    return {spans: spans.map(span => span.shift(-start)), delay: start, duration: spans.at(-1)!.end - start, iterations, direction};
 }
 
 /** The run's repeats as WAAPI iterations. */
@@ -120,11 +120,11 @@ function nativelyRepeated(run: TrackRun<TrackValue>): EffectTiming[] {
 
     // [iteration+hold] × repeatCount, then iteration on its own; [iteration+hold] × ∞ when repeating forever
     if (!oscillate) {
-        const repeating = timingOf(run.iterationSpans(0, 0, {heldUntilNext: true}), repeatCount);
+        const repeating = timingOf(run.iterationSpans(0, 0, {holdsUntilNext: true}), repeatCount);
         return repeatsForever ? [repeating] : [repeating, timingOf(iteration(repeatCount))];
     }
 
-    const repeatingPairs = (iterations: number) => timingOf(run.iterationSpans(0, 1, {heldUntilNext: true}), iterations);
+    const repeatingPairs = (iterations: number) => timingOf(run.iterationSpans(0, 1, {holdsUntilNext: true}), iterations);
 
     // [iteration+hold, flipped+hold] × ∞
     if (repeatsForever)

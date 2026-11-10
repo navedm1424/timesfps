@@ -507,7 +507,7 @@ class SequenceDefinitionBuilder<Names extends string = never> {
 - **Immutable:** each `add` returns a new builder with its own copy of the entries.
 - **Private constructors.** `SequenceDefinition` and `SequenceDefinitionBuilder` are guarded the way `SequenceTiming` and its builder are (§2.7), with a license symbol private to `src/sequence.ts`. Constructing either directly throws a `TypeError`: `A SequenceDefinition can only be created using SequenceDefinitionBuilder or SequenceDefinition.of.`, or `Use sequence to create a SequenceDefinitionBuilder.`, and `Illegal constructor` in a production build.
 - **`build`**:
-    1. names the unnamed entries in order, as `a` to `z`, then `aa`, `ab` and on (`naming.unnamedEntryNameOf`), skipping the names given;
+    1. names the unnamed entries in order, as `a` to `z`, then `aa`, `ab` and on (`naming.defaultEntryNameOf`), skipping the names given;
     2. compiles the entries' timings into a `SequenceTiming`, and keeps each entry's definition as it is, with its name, in the definition's `entries` (§3.7);
     3. throws for a sequence without entries.
 
@@ -647,12 +647,12 @@ Every error has the type of what went wrong:
 | `src/utils/math.ts` | Interpolation and solving monotone functions |
 | `src/utils/records.ts` | Reading numeric-keyed records in order |
 | `src/utils/collections.ts` | `groupBy`, `getOrInsertComputed`, `partitionPoint` (binary search for the first item past a point) |
-| `src/tracks/track-values.ts` | `TrackValue`, and its value tokens `CurrentValueToken` and `InterpolatedValueToken`: a track's values, given or left for the effects stage to work out, `currentValueToken` and `interpolatedValueOf` |
-| `src/tracks/track-runs.ts` | `TrackRunTiming`, with `repeats` and `repeatsForever`, `Oscillation`, `TrackStop`, `TrackRunSpan`, `TrackRun`, and `iterationSpansOf` and `joinedSpans`: a run's timing, its spans, its iterations and its holds; what the tracks stage gives |
+| `src/tracks/track-values.ts` | `TrackValue`, and its value tokens `CurrentValueToken` and `InterpolationToken`: a track's values, given or left for the effects stage to work out, `currentValueToken` and `valueBetween` |
+| `src/tracks/track-runs.ts` | `TrackRunTiming`, with `repeats` and `repeatsForever`, `Oscillation`, `TrackStop`, `TrackRunSpan`, `TrackRun`, and `iterationSpansOf` and `joinSpans`: a run's timing, its spans, its iterations and its holds; what the tracks stage gives |
 | `src/tracks/track-run-builder.ts` | `TrackRunBuilder`: a track run built step by step, from an entry's iteration with placeholders for its missing values, or a repeating sequence's iteration merged from its units' builders |
 | `src/tracks/missing-values.ts` | `resolveMissingValues`, through the internal `MissingValuesResolver`: the values the missing starts and ends of builders laid over each other take |
 | `src/tracks/track-entry-assembler.ts` | `TrackEntryAssembler` and `TrackEntry`: a track's entries as the builders of its track runs, in stacking order, each outermost repeating sequence's entries merged into one, over continuations of what in it repeats forever |
-| `src/tracks/track-layering.ts` | `laidOver`, which leaves out the builders that one laid over them covers, and `layeredRunsOf`: builders laid over each other as the track runs of the ones that show, with their missing values and holds |
+| `src/tracks/track-layering.ts` | `layOver`, which leaves out the builders that one laid over them covers, and `layer`: builders laid over each other as the track runs of the ones that show, with their missing values and holds |
 | `src/tracks/tracks.ts` | `TracksResolver`, its `TrackBuilder`s and the `Tracks` it gives, and `Track`: the engine-agnostic tracks stage |
 | `src/dom/mapping.ts` | What binds a timing to the DOM, for any DOM adapter: targets, value forms (`RawTweenStops`), mapping types, `AnimatorOptions`, resolving targets, and `ByElementAndProperty`, a value for each property of each element, with `mapByElementAndProperty` |
 | `src/waapi/animator.ts` | `animator`, and `WAAPIAnimator`, the `Animator` for WAAPI, which runs every step and creates the native animations |
@@ -702,7 +702,7 @@ A property's **value type** comes from `CSS.supports`, tested against `1`, `1px`
 
 Nothing is resolved in place. A track run's values are `TrackValue`s (`src/tracks/track-values.ts`), each one a **given value**, as it is, or a **value token**, which stands for a value the values stage works out:
 - the **`CurrentValueToken`** (`currentValueToken`, `{type: 'currentValue'}`): the property's value when `animate` is called;
-- an **`InterpolatedValueToken`** (`{type: 'interpolated', from, to, factor}`): the value `factor` of the way from `from` to `to`, which are track values too. A factor outside 0–1 runs past them, as a spring overshoots.
+- an **`InterpolationToken`** (`{type: 'interpolation', from, to, factor}`): the value `factor` of the way from `from` to `to`, which are track values too. A factor outside 0–1 runs past them, as a spring overshoots.
 
 Reversed stops, holds, cuts and every repeat hold the same values, so the values stage works each one out once per track (§5.6).
 
@@ -741,7 +741,7 @@ new TracksResolver(plan, naming).resolve()
 └─ 2. TrackBuilder.build(), per track
       ├─ a. Assemble      TrackEntryAssembler.assemble(entries): the builders in stacking order,
       │                   each merged builder's continuations right before it
-      └─ b. Layer         layeredRunsOf(builders): the ones that show, their missing values
+      └─ b. Layer         layer(builders): the ones that show, their missing values
                           (resolveMissingValues) and holds, each → TrackRun
 → Tracks: ByElementAndProperty<Track>
 ```
@@ -759,39 +759,37 @@ new TracksResolver(plan, naming).resolve()
 - Each leaf adds a `TrackEntry` per target and property, which has a run's timing too:
   - `start`: its sequence's `start` (0 for an animation on its own) + its position + the target's delay;
   - `duration` and its repeats from its own plan, and its `easing` and `stops`;
-  - `ancestors`: the timings of the sequences around it, the outermost first. One sequence's entries share one timing object, which stands for the sequence;
+  - `repeatingParents`: the timings of the repeating sequences around it, the outermost first. A sequence that doesn't repeat isn't among them. One sequence's entries share one timing object, which stands for the sequence;
   - `path`: its entry path (`naming.entryPathOf`).
 
 **2a. Assemble** (`TrackEntryAssembler`, `src/tracks/track-entry-assembler.ts`). Turns the entries into builders, in stacking order:
 1. **Sort.** By start (`byStart`), ties in declaration order (the sort is stable). This is the stacking order: an entry shows over the ones before it, except a merged builder's continuations, which go right under it.
-2. **Group into repeat units** (`unitsIn`, through `groupBy`). A `RepeatUnit` is what one builder lays out and repeats as one:
-    - an `EntryUnit`: an entry with no repeating sequence (`repeats`: its `repeatCount` is above 0) around it;
-    - a `SequenceUnit`: the outermost repeating sequence around entries, with those entries.
-    
-    Each unit is where its first entry is, its entries in stacking order.
-3. **Build.** For each unit, its continuations (below), then its own builder (`builderOf`):
-    - **Layered**, an `EntryUnit` (an infinite entry included): its iteration with its own repeats (`TrackRunBuilder.fromStops`). WAAPI shows a later effect over an earlier one, and the earlier one again once it ends, so these never merge.
-    - **Merged**, a `SequenceUnit`: the builders of the units in the sequence (`unitBuildersOf`, below), merged into its iteration and repeated as the sequence does (`merge`, `TrackRunBuilder.merged`). A unit of one entry is merged too, so it repeats as its sequences do.
-    - **Continuations** (`continuationsUnder`), before a merged builder: for each entry in it, the outermost of its chain (its repeating sequences inside the unit's own, then itself) that repeats forever (`repeatingForeverIn`, `repeatsForever`). Nothing around it repeats forever, so it carries on under the merged builder once that ends. Each is a new builder from its unit, named after what it continues, sorted by start. An `EntryUnit` has none, and neither does a sequence that repeats forever itself, since it never ends.
+2. **Group** (`groupedByRepeatingParent(entries, depth)`, in one pass, through `getOrInsertComputed`) by the repeating sequence (`repeats`: its `repeatCount` is above 0) `depth` sequences in, `repeatingParents[depth]`: 0 here, the outermost. It gives:
+    - `timings`: what one builder each lays out and repeats as one, where its first entry is, in stacking order: an entry with no repeating sequence around it there, or that sequence's timing;
+    - `groups` (`EntriesBySequence`): each of those sequences' entries, in stacking order, by its timing. A timing with no group is an entry.
+3. **Build.** For each timing, its continuations (below), then its own builder (`builderOf`):
+    - **Layered**, an entry (an infinite one included): its iteration with its own repeats (`TrackRunBuilder.fromStops`). WAAPI shows a later effect over an earlier one, and the earlier one again once it ends, so these never merge.
+    - **Merged**, a repeating sequence: the builders of the units in it (`unitBuildersOf`, below), merged into its iteration and repeated as the sequence does (`merge`, `TrackRunBuilder.fromChildren`). A unit of one entry is merged too, so it repeats as its sequences do.
+    - **Continuations** (`continuationsUnder`), before a merged builder: for each entry in it, the outermost of its chain (its repeating sequences inside the unit's own, then itself) that repeats forever (`repeatingForeverIn`, `repeatsForever`). Nothing around it repeats forever, so it carries on under the merged builder once that ends. Each is a new builder from its unit, named after what it continues, sorted by start. An entry has none, and neither does a sequence that repeats forever itself, since it never ends.
 
-`TrackBuilder` passes the builders to `layeredRunsOf` in that order, so each one is over the ones before it, and the continuations are under their builder.
+`TrackBuilder` passes the builders to `layer` in that order, so each one is over the ones before it, and the continuations are under their builder.
 
 **A repeating sequence's units** (`unitBuildersOf`). One iteration of the sequence is one run merged from its units' iterations, each over the ones before it, since only one run can repeat them together.
-- **Units:** its entries grouped by the repeating sequence right inside it, or by themselves without one (`unitsIn(entries, sequence)`).
-- **Builders:** an entry's is its iteration. A repeating sequence's is its own merged iteration built first, by recursion, then repeated by `TrackRunBuilder.merged`. So repeats are always a track run builder's job.
+- **Units:** its entries grouped by the repeating sequence right inside it, or by themselves without one (`groupedByRepeatingParent(entries, depth + 1)`).
+- **Builders:** an entry's is its iteration. A repeating sequence's is its own merged iteration built first, by recursion, then repeated by `TrackRunBuilder.fromChildren`. So repeats are always a track run builder's job.
 - **Repeating forever:** a unit that repeats forever is built without repeats, so it plays once in the iteration (`withoutRepeatingForever`). A finitely repeating unit plays all its repeats in it.
 - The builders go to `merge`, below.
 
 **Merging** (`merge(name, timing, units)`, in `src/tracks/track-entry-assembler.ts`). The builder of the sequence's iteration, merged from the units that show:
-1. **Showing.** The units go through `laidOver`, as a track's builders do (2b), so a unit that a later one covers is left out.
+1. **Showing.** The units go through `layOver`, as a track's builders do (2b), so a unit that a later one covers is left out.
 2. **Values.** `resolveMissingValues` gives the ones that show their missing values, by the same rules as a track's.
     - A missing start that nothing ends by, or a missing end that nothing starts after, stays missing. That leaves the merged builder's own start and end to the track it's laid on; any other builds into the current value.
-3. **Iteration** (`TrackRunBuilder.merged`). Without units, it throws. Each unit's iterations, one after another, after the first, against the spans so far:
-    - **Starts before they end** (a shared start included): it replaces their spans while it lasts (`overlaidSpans`). A span it cuts (`cutSpans`) gets the cut easing (`Easing.segment`), and keeps its stops between the lowest and highest progress that easing reaches, with a stop added where it starts, turns and ends (`narrowedStopsOf`). Values stay on the same lines.
-    - **Starts at or after their end:** it follows, with their end value held until then (`joinedSpans`).
+3. **Iteration** (`TrackRunBuilder.fromChildren`). Without units, it throws. Each unit's iterations, one after another, after the first, against the spans so far:
+    - **Starts before they end** (a shared start included): it replaces their spans while it lasts (`overlaySpans`). A span it cuts (`cutSpans`) gets the cut easing (`Easing.segment`), and keeps its stops between the lowest and highest progress that easing reaches, with a stop added at the progress's extrema on it, where it starts, turns and ends (`progressExtremaOf`, `narrowStops`). Values stay on the same lines.
+    - **Starts at or after their end:** it follows, with their end value held until then (`joinSpans`).
 
-**2b. Layer** (`layeredRunsOf(builders)`, `src/tracks/track-layering.ts`). Lays builders over each other in the order they're given, each over the ones before it. It never sorts and knows nothing of continuations, so any order works. A builder **runs at** a time from its start up to, but not at, its end (`TrackRunBuilder.runsAt`), and **covers** another when it starts with or before it and ends with or after it (`TrackRunBuilder.covers`).
-1. **Showing** (`builders.reduce(laidOver, [])`). Each builder leaves out the ones under it that it covers. They never show, and nothing takes a value from them.
+**2b. Layer** (`layer(builders)`, `src/tracks/track-layering.ts`). Lays builders over each other in the order they're given, each over the ones before it. It never sorts and knows nothing of continuations, so any order works. A builder **runs at** a time from its start up to, but not at, its end (`TrackRunBuilder.runsAt`), and **covers** another when it starts with or before it and ends with or after it (`TrackRunBuilder.covers`).
+1. **Showing** (`builders.reduce(layOver, [])`). Each builder leaves out the ones under it that it covers. They never show, and nothing takes a value from them.
 2. **Missing values** (`resolveMissingValues`, below), among the ones that show.
 3. **Holds.** The topmost of the ones that start first holds before it starts; with none showing, none does. One that ends holds after it, when none under it runs at its end.
 4. **Track runs.** The ones that show build, in the order they're given.
@@ -804,7 +802,7 @@ The constructor lays the builders in stacking order (`add`), onto `builders`, th
 
 So each waiting value's neighbor is the closest of all the others. `resolve()` then:
 1. **Neighbors' values** (`assignNeighborValues`). Each start takes its neighbor's end value, and each end its neighbor's start (`valueAt(neighbor.start)`).
-2. **Current values** (`assignCurrentValues`). A start and an end that wait for each other both take the current value: `isMadeFrom` refuses the second of the two assignments, so both are still missing, and each one still missing takes the `CurrentValueToken`.
+2. **Current values** (`assignCurrentValues`). A start and an end that wait for each other both take the current value: the second of the two assignments is refused, since its value depends on the placeholder (`dependsOn`), so both are still missing, and each one still missing takes the `CurrentValueToken`.
 
 A missing value without a neighbor stays missing: its builder builds it into the current value, unless it's a merged run's own start or end, which the track the merged builder is laid on gives a value.
 
@@ -814,15 +812,15 @@ Continuations of what repeats forever never end, so they take no end and never h
 
 | Part | What it does |
 |---|---|
-| Placeholders | Each missing value is a `Placeholder`, the same object in every span that has it (holds, cuts, flipped stops, repeats), so assigning it sets it everywhere. `PendingValue` is a value that may hold one. `unassignedPlaceholderOf` follows one placeholder to the one without a value it comes to. `isMadeFrom` refuses a value made from the placeholder itself, which then stays missing |
+| Placeholders | Each missing value is a `Placeholder`, the same object in every span that has it (holds, cuts, flipped stops, repeats), so assigning it sets it everywhere. `PendingValue` is a value that may hold one. `missingValueOf` follows one placeholder to the missing value it comes to. A value that depends on the placeholder itself (`dependsOn`) is refused, and the placeholder stays missing |
 | `fromStops(name, timing, easing, stops)` | An entry's builder: its iteration, one span from 0 to `duration` through its `TweenStops`, each missing value (`null`) a placeholder of its own |
-| `merged(name, timing, children)` | A repeating sequence's builder: its children's iterations merged into its iteration (see merging, above), from the timing's start, repeated with the sequence's timing. Without children it throws |
+| `fromChildren(name, timing, children)` | A repeating sequence's builder: its children's iterations merged into its iteration (see merging, above), from the timing's start, repeated with the sequence's timing. Without children it throws |
 | `start`, `end`, `ends` | When its first iteration starts and its last one ends, and whether it ends. `end` is `Infinity` when it repeats forever |
 | `runsAt(time)`, `covers(other)` | Whether it runs at `time`, from its start up to, but not at, its end, and whether it starts with or before `other` and ends with or after it |
 | `valueAt(time)` | Its iteration's value then, held through the repeat delay after each iteration, and its start or end value outside its iterations: the next span's start where two meet. Its end value is its last iteration's, so after an odd number of flips, it's the start's |
 | `startValue`, `endValue` | The value its first iteration starts on, and the value its last iteration ends on |
 | `hasMissingStartValue`, `hasMissingEndValue` | Whether the value is missing. One that never ends has no end to miss |
-| `assignStartValueIfMissing(value)`, `assignEndValueIfMissing(value)` | A missing start or end takes `value`: another builder's value at a time, which is a stop's value or an `InterpolatedValueToken`, another's end value, or the `CurrentValueToken`. They do nothing when the value isn't missing, or `value` is made from it |
+| `assignStartValueIfMissing(value)`, `assignEndValueIfMissing(value)` | A missing start or end takes `value`: another builder's value at a time, which is a stop's value or an `InterpolationToken`, another's end value, or the `CurrentValueToken`. They do nothing when the value isn't missing, or `value` depends on it |
 | `holdBefore()`, `holdAfter()` | Makes it hold its start value before it, or its end value after it |
 | `build()` | The track run: its name, its timing, its spans with each placeholder as its value, or the `CurrentValueToken` without one, each interpolated value resolved once (`TrackRunSpan.map`), and its holds |
 
@@ -834,12 +832,12 @@ Continuations of what repeats forever never end, so they take no end and never h
 |---|---|
 | `TrackStop` | A value at an offset of a span's progress |
 | `TrackRunSpan` | `start` to `end`, an `easing` and its `stops`, valued at `valueAtProgress(easing.progressAt(x))`. One easing runs through all its stops: linear between two stops, continuing the nearest two past the outer ones |
-| `valueAtProgress(progress)` | A stop's own value at a stop, and otherwise an `InterpolatedValueToken` (`interpolatedValueOf`, which gives an end itself at a factor of 0 or 1, or when both ends are the same). A builder's spans hold `TweenStops` values as given, and a run's `TrackValue`s (§5.2) |
+| `valueAtProgress(progress)` | A stop's own value at a stop, and otherwise an `InterpolationToken` (`valueBetween`, which gives an end itself at a factor of 0 or 1, or when both ends are the same). A builder's spans hold `TweenStops` values as given, and a run's `TrackValue`s (§5.2) |
 | `startValue`, `endValue` | At the progress its easing starts from and ends at |
-| `stopsBetween(from, to)`, `shifted(by)`, `map(transform)` | The stops strictly between two progresses, the span moved in time, and the span with each value transformed |
+| `stopsBetween(from, to)`, `shift(by)`, `map(transform)` | The stops strictly between two progresses, the span moved in time, and the span with each value transformed |
 | Hold | A span with the same value at 0 and 1 and a linear easing |
-| `iterationSpansOf(timing, spans, first, last, {heldUntilNext})` | A run's iterations from `first` to `last`, after the outermost definition starts, one after another, each one's end value held until the next starts (`joinedSpans`). With `heldUntilNext`, the last one's is held too, until the iteration after it would start. Every other iteration of an oscillation is laid out back to front: one that flips its `'time'` reverses each easing (`Easing.reverse`), and one that flips its `'values'` reverses the stops, each one moved from its offset to 1 minus it. It throws without spans, and for iterations the run doesn't have |
-| `TrackRun` | What the tracks stage gives: fields below, and `iterationSpans(first, last, {heldUntilNext})`, its iterations through `iterationSpansOf`. Without spans, it throws |
+| `iterationSpansOf(timing, spans, first, last, {holdsUntilNext})` | A run's iterations from `first` to `last`, after the outermost definition starts, one after another, each one's end value held until the next starts (`joinSpans`). With `holdsUntilNext`, the last one's is held too, until the iteration after it would start. Every other iteration of an oscillation is laid out back to front: one that flips its `'time'` reverses each easing (`Easing.reverse`), and one that flips its `'values'` reverses the stops, each one moved from its offset to 1 minus it. It throws without spans, and for iterations the run doesn't have |
+| `TrackRun` | What the tracks stage gives: fields below, and `iterationSpans(first, last, {holdsUntilNext})`, its iterations through `iterationSpansOf`. Without spans, it throws |
 
 | `TrackRun` field | Meaning |
 |---|---|
@@ -853,7 +851,7 @@ Continuations of what repeats forever never end, so they take no end and never h
 
 ### 5.5 Effects, stage a: timing
 
-`NativeEffectsResolver.resolve(tracks, valueResolver)` (`src/waapi/tracks.ts`) turns each track run into WAAPI effects. `nativeTimingOf` turns it into WAAPI timing: natively repeated where WAAPI can, laid out in the keyframes where it can't. Each effect plays spans from `TrackRun.iterationSpans`, moved to start at 0 (`TrackRunSpan.shifted`), delayed by where they start (`timingOf`).
+`NativeEffectsResolver.resolve(tracks, valueResolver)` (`src/waapi/tracks.ts`) turns each track run into WAAPI effects. `nativeTimingOf` turns it into WAAPI timing: natively repeated where WAAPI can, laid out in the keyframes where it can't. Each effect plays spans from `TrackRun.iterationSpans`, moved to start at 0 (`TrackRunSpan.shift`), delayed by where they start (`timingOf`).
 
 **Native layout.** For a run whose iteration's spans go from `a` to `b`, in iterations of `L` with a repeat delay `d`, the period is `P = L + d`:
 
@@ -867,7 +865,7 @@ Continuations of what repeats forever never end, so they take no end and never h
 | Oscillating, two iterations | [iteration + hold, flipped] on its own |
 | Oscillating, even iteration count | [iteration + hold, flipped + hold] × (repeatCount−1)/2, then [iteration + hold, flipped] on its own |
 
-The last iteration never ends with a hold. The holds between iterations, `[endHold + repeatDelay + startHold]`, are in the keyframes (`iterationSpans` with `heldUntilNext`). Each effect starts where its first iteration does, after the outermost definition starts.
+The last iteration never ends with a hold. The holds between iterations, `[endHold + repeatDelay + startHold]`, are in the keyframes (`iterationSpans` with `holdsUntilNext`). Each effect starts where its first iteration does, after the outermost definition starts.
 
 **Fills.** The first effect of a run that holds before fills backwards, and every effect of a run that holds after fills forwards.
 
@@ -908,7 +906,7 @@ Each syntax has two probes with different initial values. A value that the synta
   1. A spring is fitted once per spring and duration, as a spline of cubic Bézier segments. The segments that overlap its window are cut to it.
   2. Each segment is split where its progress turns back, so each piece only rises or only falls. A span with only two stops isn't, unless it's a spring: its value runs linearly with the progress everywhere, even past the stops, as WAAPI extrapolates between two keyframes.
   3. Each piece is split where it passes a stop, so between two keyframes the value runs linearly with the progress. A keyframe there takes the stop's own value, and a piece's ends take the values there (`TrackRunSpan.valueAtProgress`).
-  4. Each piece becomes a native easing, scaled to 0–1. A piece split further, as below, takes the value between its ends where it's split (`interpolatedValueOf`):
+  4. Each piece becomes a native easing, scaled to 0–1. A piece split further, as below, takes the value between its ends where it's split (`valueBetween`):
      - **Cubic Bézier:** the window is cut out of the curve and stretched. If stretching would push a handle outside the 0–1 time range, it's split once more at the inflection of x. Reversed windows reverse the definition.
      - **Steps:** a whole forward window from 0 to 1 stays a native `steps()`. Any other window becomes a `linear()` whose levels jump at the step positions, so steps never add keyframes.
      - **Linear:** linear.
@@ -965,7 +963,7 @@ For each target, property and effect, in order, the adapter calls `element.anima
 
 It compares the result with the definitions' own math, sampled at times that miss round numbers, where steps and repeats jump. The definitions' math is: each iteration through the stops and easing, holds through repeat delays, `reverse` as time reversal, and `mirror` as `1 − progress` with the easing running forwards. Its interpolation of stops is `NumericStops` (`tests/numeric-stops.ts`), kept apart from the library's own.
 
-The cases cover single animations through every repeat, entries in sequences, and entries in repeating sequences, through plans whose sequences tests give `repeatOptions` (`withRepeats`). Easings are cubic Bézier (including overshoot), jump-start and jump-end steps, and springs. Plan, timing, fill, layering and missing-value cases are checked exactly. A builder holding after it ends when the one under its end never shows is checked on `layeredRunsOf` directly, since no definition lays builders in that order.
+The cases cover single animations through every repeat, entries in sequences, and entries in repeating sequences, through plans whose sequences tests give `repeatOptions` (`withRepeats`). Easings are cubic Bézier (including overshoot), jump-start and jump-end steps, and springs. Plan, timing, fill, layering and missing-value cases are checked exactly. A builder holding after it ends when the one under its end never shows is checked on `layer` directly, since no definition lays builders in that order.
 
 `tests/animation.test.ts` covers timings: validation and clamping, telling transition kinds apart, splitting `AnimationTimingOptions`, the `DampedSpring` factories, and staggers. `tests/sequence.test.ts` covers positions (parsing, one offset of each kind in order, and resolving every reference and share), sequence timings, targets, tween stops (their forms, their checks and their ends), and definitions: values checked as they're made, naming, immutability, their entries, and private constructors.
 

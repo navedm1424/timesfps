@@ -4,8 +4,8 @@ import type {TweenStops} from "../tween-stops.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import {clamp} from "../utils/math.ts";
-import {iterationSpansOf, joinedSpans, repeatsForever, TrackRun, TrackRunSpan, type TrackRunTiming, type TrackStop} from "./track-runs.ts";
-import {type CurrentValueToken, currentValueToken, type InterpolatedValueToken, type TrackValue} from "./track-values.ts";
+import {iterationSpansOf, joinSpans, repeatsForever, TrackRun, TrackRunSpan, type TrackRunTiming, type TrackStop} from "./track-runs.ts";
+import {type CurrentValueToken, currentValueToken, type InterpolationToken, type TrackValue} from "./track-values.ts";
 
 /** A missing value, until a value is assigned to it: every span and token that has it then has that value. */
 interface Placeholder {
@@ -13,7 +13,7 @@ interface Placeholder {
     value: PendingValue | undefined;
 }
 
-export type PendingValue = CSSValue | CurrentValueToken | Placeholder | InterpolatedValueToken<PendingValue>;
+export type PendingValue = CSSValue | CurrentValueToken | Placeholder | InterpolationToken<PendingValue>;
 
 /**
  * A track run, built step by step: an entry's iteration, or a repeating sequence's iteration with its children merged into it, that repeats as its timing does.
@@ -41,15 +41,15 @@ export class TrackRunBuilder {
      * One that starts within the ones before it replaces them while it lasts; one that starts where they end, or later, follows them, their end value held until then.
      * Throws without children; each one must end.
      */
-    static merged(name: string | undefined, timing: TrackRunTiming, children: readonly TrackRunBuilder[]): TrackRunBuilder {
+    static fromChildren(name: string | undefined, timing: TrackRunTiming, children: readonly TrackRunBuilder[]): TrackRunBuilder {
         if (!children.length)
             throw new Error("A repeating sequence's iteration merges the iterations of the runs in it, but it was given none. Merge at least one.");
         const [first, ...rest] = children.map(child => {
             child.requireEnd("iterations to merge");
             return child.iterationSpans(0, child.lastIterationIndex);
         });
-        const spans = rest.reduce<TrackRunSpan<PendingValue>[]>((below, top) => overlaidSpans(below, top), first!);
-        return new TrackRunBuilder(name, timing, spans.map(span => span.shifted(-timing.start)));
+        const spans = rest.reduce(overlaySpans, first!);
+        return new TrackRunBuilder(name, timing, spans.map(span => span.shift(-timing.start)));
     }
 
     /** When its first iteration starts. */
@@ -105,14 +105,21 @@ export class TrackRunBuilder {
         return valueAtTimeOf(this.iterationAt(index), time);
     }
 
-    /** Gives a missing start `value`, unless `value` is made from it. */
+    /** Gives a missing start `value`, unless `value` depends on it. */
     assignStartValueIfMissing(value: PendingValue): void {
         assignIfMissing(this.startValue, value);
     }
 
-    /** Gives a missing end `value`, unless `value` is made from it; it must end. */
+    /** Gives a missing end `value`, unless `value` depends on it; it must end. */
     assignEndValueIfMissing(value: PendingValue): void {
         assignIfMissing(this.endValue, value);
+    }
+
+    /** Itself when it ends; otherwise a builder of its first iteration only, without repeats, with the same values, so a value assigned to one is the other's too. */
+    withoutRepeatingForever(): TrackRunBuilder {
+        if (this.ends) return this;
+        const {start, duration} = this.timing;
+        return new TrackRunBuilder(this.name, {start, duration, repeatCount: 0, repeatDelay: 0}, this.spans);
     }
 
     /** Makes it hold the value it starts on before it starts. */
@@ -127,8 +134,8 @@ export class TrackRunBuilder {
 
     /** The track run: each placeholder with its value, or the property's current value without one, and whether it holds before and after it. */
     build(): TrackRun<TrackValue> {
-        const resolvedTokens = new Map<InterpolatedValueToken<PendingValue>, TrackValue>();
-        const spans = this.spans.map(span => span.map(value => resolvedValueOf(value, resolvedTokens)));
+        const trackValuesByToken = new Map<InterpolationToken<PendingValue>, TrackValue>();
+        const spans = this.spans.map(span => span.map(value => trackValueOf(value, trackValuesByToken)));
         return new TrackRun(this.name, this.timing, spans, this.holdsBefore, this.holdsAfter);
     }
 
@@ -171,11 +178,11 @@ function progressAt({start, end, easing}: TrackRunSpan<unknown>, time: Seconds):
  * The spans with `top`'s in place of their own for as long as `top` lasts,
  * or, when `top` starts where they end or later, followed by `top`'s, their end value held until then.
  */
-function overlaidSpans(below: readonly TrackRunSpan<PendingValue>[], top: readonly TrackRunSpan<PendingValue>[]): TrackRunSpan<PendingValue>[] {
+function overlaySpans(below: readonly TrackRunSpan<PendingValue>[], top: readonly TrackRunSpan<PendingValue>[]): TrackRunSpan<PendingValue>[] {
     const start = below[0]!.start;
     const end = below.at(-1)!.end;
     const topStart = top[0]!.start;
-    if (topStart >= end) return joinedSpans([below, top]);
+    if (topStart >= end) return joinSpans([below, top]);
     return [...cutSpans(below, start, topStart), ...top, ...cutSpans(below, top.at(-1)!.end, end)];
 }
 
@@ -194,19 +201,19 @@ function cutSpans(spans: readonly TrackRunSpan<PendingValue>[], start: Seconds, 
 
         const offsetOf = (time: Seconds) => (time - span.start) / (span.end - span.start);
         const easing = span.easing.segment(offsetOf(cutStart), offsetOf(cutEnd));
-        return [new TrackRunSpan(cutStart, cutEnd, easing, narrowedStopsOf(span, reachedProgressesOf(easing)))];
+        return [new TrackRunSpan(cutStart, cutEnd, easing, narrowStops(span, progressExtremaOf(easing)))];
     });
 }
 
 /** The span's stops between the lowest and the highest of the progresses, with a stop of the value there at each of the progresses that has none; offsets stay as they are. */
-function narrowedStopsOf(span: TrackRunSpan<PendingValue>, progresses: readonly Progress[]): TrackStop<PendingValue>[] {
+function narrowStops(span: TrackRunSpan<PendingValue>, progresses: readonly Progress[]): TrackStop<PendingValue>[] {
     const reached = span.stopsBetween(Math.min(...progresses), Math.max(...progresses)).map(({offset}) => offset);
     const offsets = [...new Set([...reached, ...progresses])].sort((first, second) => first - second);
     return offsets.map(offset => ({offset, value: span.valueAtProgress(offset)}));
 }
 
 /** The progresses the easing's window starts at, turns at and ends at. */
-function reachedProgressesOf(easing: Easing): Progress[] {
+function progressExtremaOf(easing: Easing): Progress[] {
     return [easing.startProgress, ...easing.turningOffsets().map(offset => easing.progressAt(offset)), easing.endProgress];
 }
 
@@ -219,33 +226,33 @@ function isPlaceholder(value: PendingValue): value is Placeholder {
 }
 
 /** The placeholder without a value that `value` comes to, through the placeholders it has. */
-function unassignedPlaceholderOf(value: PendingValue): Placeholder | undefined {
+function missingValueOf(value: PendingValue): Placeholder | undefined {
     if (!isPlaceholder(value)) return undefined;
-    return value.value === undefined ? value : unassignedPlaceholderOf(value.value);
+    return value.value === undefined ? value : missingValueOf(value.value);
 }
 
 function isMissing(value: PendingValue): boolean {
-    return unassignedPlaceholderOf(value) !== undefined;
+    return missingValueOf(value) !== undefined;
 }
 
-/** Gives `value` to the placeholder without a value that `pending` comes to, if there's one, unless `value` is made from it. */
+/** Gives `value` to the placeholder without a value that `pending` comes to, if there's one, unless `value` depends on it. */
 function assignIfMissing(pending: PendingValue, value: PendingValue): void {
-    const unassigned = unassignedPlaceholderOf(pending);
-    if (unassigned && !isMadeFrom(value, unassigned)) unassigned.value = value;
+    const missing = missingValueOf(pending);
+    if (missing && !dependsOn(value, missing)) missing.value = value;
 }
 
 /** Whether `value` is the placeholder, or comes to it through placeholders and the ends of interpolated values. */
-function isMadeFrom(value: PendingValue, unassigned: Placeholder): boolean {
-    if (value === unassigned) return true;
+function dependsOn(value: PendingValue, missing: Placeholder): boolean {
+    if (value === missing) return true;
     if (typeof value !== 'object' || value.type === 'currentValue') return false;
-    if (value.type === 'placeholder') return value.value !== undefined && isMadeFrom(value.value, unassigned);
-    return isMadeFrom(value.from, unassigned) || isMadeFrom(value.to, unassigned);
+    if (value.type === 'placeholder') return value.value !== undefined && dependsOn(value.value, missing);
+    return dependsOn(value.from, missing) || dependsOn(value.to, missing);
 }
 
 /** The value with each placeholder's value, and the property's current value for each one without; an interpolated value resolves once. */
-function resolvedValueOf(value: PendingValue, resolvedTokens: Map<InterpolatedValueToken<PendingValue>, TrackValue>): TrackValue {
-    if (isPlaceholder(value)) return value.value === undefined ? currentValueToken : resolvedValueOf(value.value, resolvedTokens);
+function trackValueOf(value: PendingValue, trackValuesByToken: Map<InterpolationToken<PendingValue>, TrackValue>): TrackValue {
+    if (isPlaceholder(value)) return value.value === undefined ? currentValueToken : trackValueOf(value.value, trackValuesByToken);
     if (typeof value !== 'object' || value.type === 'currentValue') return value;
 
-    return getOrInsertComputed(resolvedTokens, value, () => ({...value, from: resolvedValueOf(value.from, resolvedTokens), to: resolvedValueOf(value.to, resolvedTokens)}));
+    return getOrInsertComputed(trackValuesByToken, value, () => ({...value, from: trackValueOf(value.from, trackValuesByToken), to: trackValueOf(value.to, trackValuesByToken)}));
 }

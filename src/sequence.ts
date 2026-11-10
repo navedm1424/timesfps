@@ -118,7 +118,7 @@ export class SequenceDefinitionBuilder<Names extends string = never> {
         let ordinal = 0;
         const nextUnnamedName = () => {
             let name: string;
-            do name = naming.unnamedEntryNameOf(ordinal++);
+            do name = naming.defaultEntryNameOf(ordinal++);
             while (givenNames.has(name));
             return name;
         };

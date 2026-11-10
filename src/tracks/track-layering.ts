@@ -1,10 +1,10 @@
 import {resolveMissingValues} from "./missing-values.ts";
-import type {TrackRunBuilder} from "./track-run-builder.ts";
-import type {TrackRun} from "./track-runs.ts";
+import {TrackRunBuilder} from "./track-run-builder.ts";
+import type {TrackRun, TrackRunTiming} from "./track-runs.ts";
 import type {TrackValue} from "./track-values.ts";
 
 /** The builders that show once `top` is laid over them: the ones it covers never show. */
-export function laidOver(showing: readonly TrackRunBuilder[], top: TrackRunBuilder): TrackRunBuilder[] {
+export function layOver(showing: readonly TrackRunBuilder[], top: TrackRunBuilder): TrackRunBuilder[] {
     return [...showing.filter(below => !top.covers(below)), top];
 }
 
@@ -14,8 +14,8 @@ export function laidOver(showing: readonly TrackRunBuilder[], top: TrackRunBuild
  * - after it ends, one that ends with none under it running there;
  * - before it starts, the topmost of the ones that start first.
  */
-export function layeredRunsOf(builders: readonly TrackRunBuilder[]): TrackRun<TrackValue>[] {
-    const showing = builders.reduce<TrackRunBuilder[]>(laidOver, []);
+export function layer(builders: readonly TrackRunBuilder[]): TrackRun<TrackValue>[] {
+    const showing = builders.reduce<TrackRunBuilder[]>(layOver, []);
     resolveMissingValues(showing);
 
     if (showing.length)
@@ -27,4 +27,15 @@ export function layeredRunsOf(builders: readonly TrackRunBuilder[]): TrackRun<Tr
         under.push(builder);
     });
     return showing.map(builder => builder.build());
+}
+
+/**
+ * The builder of a repeating sequence's iteration that repeats as `timing` does: the builders that show, laid over each other in stacking order,
+ * each over the ones before it, their missing values taken as they layer, merged into it (`TrackRunBuilder.fromChildren`).
+ * A missing start that nothing ends by, or a missing end that nothing starts after, stays missing. Throws without builders.
+ */
+export function merge(name: string | undefined, timing: TrackRunTiming, builders: readonly TrackRunBuilder[]): TrackRunBuilder {
+    const showing = builders.reduce<TrackRunBuilder[]>(layOver, []);
+    resolveMissingValues(showing);
+    return TrackRunBuilder.fromChildren(name, timing, showing);
 }

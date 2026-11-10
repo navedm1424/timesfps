@@ -18,7 +18,7 @@ import {cssEasingOf, type NativeEasing} from "../src/waapi/native-easing.ts";
 import {alignNumbers, type CSSValueResolver} from "../src/waapi/css-values.ts";
 import {naming, type EntryPath} from "../src/naming.ts";
 import {TrackRunBuilder} from "../src/tracks/track-run-builder.ts";
-import {layeredRunsOf} from "../src/tracks/track-layering.ts";
+import {layer} from "../src/tracks/track-layering.ts";
 import {TracksResolver} from "../src/tracks/tracks.ts";
 import {TweenStops} from "../src/tween-stops.ts";
 import {type AnimationTracks, NativeEffectsResolver} from "../src/waapi/tracks.ts";
@@ -668,7 +668,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .build();
         const effects = effectsOf(sequence, {s: {repeat: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
         expect(effects.map(({name}) => name)).toEqual(['s>i', 's>a+s>i']);
-        expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 10]]);
+        expect(keyframesOf(effects[0]!)).toEqual([[0, 6], [1, 10]]);
     });
 
     it("takes nothing for what goes on under a repeating sequence from an entry the sequence hides, where that entry ends before it", () => {
@@ -682,7 +682,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .build();
         const effects = effectsOf(sequence, {s: {repeat: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
         expect(effects.map(({name}) => name)).toEqual(['s>i', 's>a+s>i']);
-        expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 10]]);
+        expect(keyframesOf(effects[0]!)).toEqual([[0, 6], [1, 10]]);
     });
 
     it("layers a repeating sequence over the entries outside it as one entry, repeating as the sequence does", () => {
@@ -697,12 +697,12 @@ describe("NativeEffectsResolver repeating sequences", () => {
     });
 });
 
-describe("layeredRunsOf", () => {
+describe("layer", () => {
     const builderOf = (name: string, start: Seconds, duration: Seconds) =>
         TrackRunBuilder.fromStops(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
 
     it("holds a run after it ends when the one under its end never shows", () => {
-        const runs = layeredRunsOf([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
+        const runs = layer([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
         expect(runs.map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
             {name: 'b', holdsAfter: true},
             {name: 'c', holdsAfter: true}

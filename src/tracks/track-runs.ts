@@ -3,7 +3,7 @@ import {linear} from "../easing-specifier.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {partitionPoint} from "../utils/collections.ts";
 import {clamp, invLerp} from "../utils/math.ts";
-import {type InterpolatedValueToken, interpolatedValueOf} from "./track-values.ts";
+import {type InterpolationToken, valueBetween} from "./track-values.ts";
 
 /**
  * What every other iteration of an oscillating repeat flips: its time, so it plays backwards,
@@ -50,17 +50,17 @@ export class TrackRunSpan<Value> {
     ) {}
 
     /** The value at the progress its easing starts from. */
-    get startValue(): Value | InterpolatedValueToken<Value> {
+    get startValue(): Value | InterpolationToken<Value> {
         return this.valueAtProgress(this.easing.startProgress);
     }
 
     /** The value at the progress its easing ends at. */
-    get endValue(): Value | InterpolatedValueToken<Value> {
+    get endValue(): Value | InterpolationToken<Value> {
         return this.valueAtProgress(this.easing.endProgress);
     }
 
     /** The stop's own value at a stop; otherwise the value between the stops around the progress, or between the nearest two past either end. */
-    valueAtProgress(progress: Progress): Value | InterpolatedValueToken<Value> {
+    valueAtProgress(progress: Progress): Value | InterpolationToken<Value> {
         const {stops} = this;
         const atOrAfterIndex = partitionPoint(stops, stop => stop.offset >= progress);
         const stopThere = stops[atOrAfterIndex];
@@ -70,7 +70,7 @@ export class TrackRunSpan<Value> {
         const endIndex = clamp(atOrAfterIndex, 1, stops.length - 1);
         const start = stops[endIndex - 1]!;
         const end = stops[endIndex]!;
-        return interpolatedValueOf(start.value, end.value, invLerp(start.offset, end.offset, progress));
+        return valueBetween(start.value, end.value, invLerp(start.offset, end.offset, progress));
     }
 
     /** The stops strictly between the two progresses, in either order. */
@@ -81,7 +81,7 @@ export class TrackRunSpan<Value> {
     }
 
     /** The same span, moved in time. */
-    shifted(by: Seconds): TrackRunSpan<Value> {
+    shift(by: Seconds): TrackRunSpan<Value> {
         return new TrackRunSpan(this.start + by, this.end + by, this.easing, this.stops);
     }
 
@@ -111,14 +111,14 @@ export class TrackRun<Value> {
     }
 
     /** Its iterations from `first` to `last`, as `iterationSpansOf` lays them out. */
-    iterationSpans(first: number, last: number, options: { heldUntilNext?: boolean } = {}): TrackRunSpan<Value | InterpolatedValueToken<Value>>[] {
+    iterationSpans(first: number, last: number, options: { holdsUntilNext?: boolean } = {}): TrackRunSpan<Value | InterpolationToken<Value>>[] {
         return iterationSpansOf(this.timing, this.spans, first, last, options);
     }
 }
 
 /**
  * The spans of a run's iterations from `first` to `last`, after the outermost definition starts, one after another, each one's end value held until the next starts;
- * with `heldUntilNext`, the last one's too, until the iteration after it would start. `spans` are one iteration, from the timing's start.
+ * with `holdsUntilNext`, the last one's too, until the iteration after it would start. `spans` are one iteration, from the timing's start.
  * Every other iteration of an oscillation is laid out back to front: one that flips its time runs each easing backwards, and one that flips its values runs it forwards through reversed stops.
  * Throws without spans, or for iterations the run doesn't have.
  */
@@ -127,8 +127,8 @@ export function iterationSpansOf<Value>(
     spans: readonly TrackRunSpan<Value>[],
     first: number,
     last: number,
-    {heldUntilNext = false}: { heldUntilNext?: boolean } = {}
-): TrackRunSpan<Value | InterpolatedValueToken<Value>>[] {
+    {holdsUntilNext = false}: { holdsUntilNext?: boolean } = {}
+): TrackRunSpan<Value | InterpolationToken<Value>>[] {
     const {repeatCount} = timing;
     if (!spans.length)
         throw new Error("A run's iterations are laid out from its spans, but it was given none. Give it the spans of its iteration.");
@@ -136,16 +136,15 @@ export function iterationSpansOf<Value>(
         throw new Error(`A run's iterations are 0 to its repeat count, ${repeatCount}, but iterations ${first} to ${last} were asked for. Ask for whole iterations within that range, the first one no later than the last.`);
 
     const iterations = Array.from({length: last - first + 1}, (_, index) => iterationAt(timing, spans, first + index));
-    const joined = joinedSpans(iterations);
-    if (!heldUntilNext) return joined;
+    if (!holdsUntilNext) return joinSpans(iterations);
 
     const lastSpan = iterations.at(-1)!.at(-1)!;
-    return [...joined, ...holdSpans(lastSpan.endValue, lastSpan.end, iterationAt(timing, spans, last + 1)[0]!.start)];
+    return [...joinSpans(iterations), ...holdSpans(lastSpan.endValue, lastSpan.end, iterationAt(timing, spans, last + 1)[0]!.start)];
 }
 
 /** Groups of spans one after another, each one's end value held until the next starts. */
-export function joinedSpans<Value>(groups: readonly (readonly TrackRunSpan<Value>[])[]): TrackRunSpan<Value | InterpolatedValueToken<Value>>[] {
-    return groups.flatMap((spans, index): TrackRunSpan<Value | InterpolatedValueToken<Value>>[] => {
+export function joinSpans<Value>(groups: readonly (readonly TrackRunSpan<Value>[])[]): TrackRunSpan<Value | InterpolationToken<Value>>[] {
+    return groups.flatMap((spans, index): TrackRunSpan<Value | InterpolationToken<Value>>[] => {
         const previous = groups[index - 1]?.at(-1);
         return previous ? [...holdSpans(previous.endValue, previous.end, spans[0]!.start), ...spans] : [...spans];
     });
@@ -153,15 +152,15 @@ export function joinedSpans<Value>(groups: readonly (readonly TrackRunSpan<Value
 
 /** The spans of one iteration in the iteration at `index`, after the outermost definition starts. */
 function iterationAt<Value>({start, duration, repeatDelay, oscillate}: TrackRunTiming, spans: readonly TrackRunSpan<Value>[], index: number): TrackRunSpan<Value>[] {
-    const laidOut = index % 2 === 0 || !oscillate ? spans : flippedSpans(spans, duration, oscillate);
-    return laidOut.map(span => span.shifted(start + index * (duration + repeatDelay)));
+    const iteration = index % 2 === 0 || !oscillate ? spans : flipSpans(spans, duration, oscillate);
+    return iteration.map(span => span.shift(start + index * (duration + repeatDelay)));
 }
 
 /**
  * The spans within 0 to `duration` laid out back to front: flipping their time runs each easing backwards,
  * and flipping their values keeps it running forwards through reversed stops, each one moved from its offset to 1 minus it.
  */
-function flippedSpans<Value>(spans: readonly TrackRunSpan<Value>[], duration: Seconds, oscillate: Oscillation): TrackRunSpan<Value>[] {
+function flipSpans<Value>(spans: readonly TrackRunSpan<Value>[], duration: Seconds, oscillate: Oscillation): TrackRunSpan<Value>[] {
     return spans.map(({start, end, easing, stops}) => new TrackRunSpan(
         duration - end,
         duration - start,
