@@ -648,12 +648,11 @@ Every error has the type of what went wrong:
 | `src/utils/records.ts` | Reading numeric-keyed records in order |
 | `src/utils/collections.ts` | `groupBy`, `getOrInsertComputed`, `partitionPoint` (binary search for the first item past a point) |
 | `src/tracks/track-values.ts` | `TrackValue`, and its value tokens `CurrentValueToken` and `InterpolationToken`: a track's values, given or left for the effects stage to work out, `currentValueToken` and `valueBetween` |
-| `src/tracks/track-runs.ts` | `TrackRunTiming`, with `repeats` and `repeatsForever`, `Oscillation`, `TrackStop`, `TrackRunSpan`, `TrackRun`, and `iterationSpansOf` and `joinSpans`: a run's timing, its spans, its iterations and its holds; what the tracks stage gives |
-| `src/tracks/track-run-builder.ts` | `TrackRunBuilder`: a track run built step by step, from an entry's iteration with placeholders for its missing values, or a repeating sequence's iteration merged from its units' builders |
+| `src/tracks/track-runs.ts` | `TrackEntry`, with `repeats` and `repeatsForever`, `Oscillation`, `TrackStop`, `TrackRunSpan`, `TrackRun`, and `iterationSpansOf` and `joinSpans`: an entry's run, a run's spans, its iterations and its holds; what the tracks stage gives |
+| `src/tracks/track-run-builder.ts` | `TrackRunBuilder`: a track run built step by step, from an entry's iteration with placeholders for its missing values, or a repeating sequence's iteration merged from the builders in it |
 | `src/tracks/missing-values.ts` | `resolveMissingValues`, through the internal `MissingValuesResolver`: the values the missing starts and ends of builders laid over each other take |
-| `src/tracks/track-entry-assembler.ts` | `TrackEntryAssembler` and `TrackEntry`: a track's entries as the builders of its track runs, in stacking order, each outermost repeating sequence's entries merged into one, over continuations of what in it repeats forever |
-| `src/tracks/track-layering.ts` | `layOver`, which leaves out the builders that one laid over them covers, and `layer`: builders laid over each other as the track runs of the ones that show, with their missing values and holds |
-| `src/tracks/tracks.ts` | `TracksResolver`, its `TrackBuilder`s and the `Tracks` it gives, and `Track`: the engine-agnostic tracks stage |
+| `src/tracks/track-layering.ts` | `layOver`, which leaves out the builders that one laid over them covers, `layer`: builders laid over each other as the track runs of the ones that show, with their missing values and holds, and `merge`: the builders in a repeating sequence that show, merged into its builder |
+| `src/tracks/tracks.ts` | `TracksResolver`, its `TrackBuilder`s, which hold a track's entries (`TrackItemEntry`) in the groups of the sequences around them (`TrackGroupEntry`) and build them into its track runs, the `Tracks` it gives, and `Track`: the engine-agnostic tracks stage |
 | `src/dom/mapping.ts` | What binds a timing to the DOM, for any DOM adapter: targets, value forms (`RawTweenStops`), mapping types, `AnimatorOptions`, resolving targets, and `ByElementAndProperty`, a value for each property of each element, with `mapByElementAndProperty` |
 | `src/waapi/animator.ts` | `animator`, and `WAAPIAnimator`, the `Animator` for WAAPI, which runs every step and creates the native animations |
 | `src/waapi/controls.ts` | `AnimationControls`: playing, pausing, seeking and listening to the native animations together |
@@ -737,17 +736,18 @@ The anchor duration (§2.7.2) stays in the planners: only placing the entries af
 
 ```
 new TracksResolver(plan, naming).resolve()
-├─ 1. Walk the plan     each leaf → a TrackEntry in the TrackBuilder of each of its targets × properties
+├─ 1. Walk the plan     each sequence → a group in every TrackBuilder (startGroup … endGroup),
+│                       each leaf → a TrackItemEntry in the TrackBuilder of each of its targets × properties
 └─ 2. TrackBuilder.build(), per track
-      ├─ a. Assemble      TrackEntryAssembler.assemble(entries): the builders in stacking order,
-      │                   each merged builder's continuations right before it
+      ├─ a. Build         the entries' builders: an item entry's own, a group's that doesn't repeat in its place,
+      │                   a repeating group's merged into one; sorted, each merged builder's continuations right before it
       └─ b. Layer         layer(builders): the ones that show, their missing values
                           (resolveMissingValues) and holds, each → TrackRun
 → Tracks: ByElementAndProperty<Track>
 ```
 
-**1. Walk the plan.** Entries are added to their `TrackBuilder` in declaration order, which keeps them in that order. `TracksResolver` makes one `TrackEntryAssembler` with its `naming`, and every `TrackBuilder` takes it.
-- **Runs.** The plan's `repeatOptions` become the tracks stage's own terms here, once (`trackRunTimingOf`), in a `TrackRunTiming` (`src/tracks/track-runs.ts`):
+**1. Walk the plan.** Entries are added to their `TrackBuilder` in declaration order, which keeps them in that order. `TracksResolver` gives every `TrackBuilder` its `naming`.
+- **Runs.** The plan's `repeatOptions` become the tracks stage's own terms here, once (`trackEntryOf`), in a `TrackEntry` (`src/tracks/track-runs.ts`), the run every entry of a track has:
   - `start`, after the outermost definition starts, and `duration`, one iteration;
   - `repeatCount`: the iterations after the first, `Infinity` forever;
   - `repeatDelay`: how long it holds its end value before each repeat, in seconds;
@@ -756,35 +756,45 @@ new TracksResolver(plan, naming).resolve()
 - Each sequence gets a run:
   - `start`: the start of the sequence around it plus its position, or its own position for the outermost;
   - `duration`: one iteration of it, repeated as its plan's `repeatOptions` say.
-- Each leaf adds a `TrackEntry` per target and property, which has a run's timing too:
+- **Groups.** `addSequence` starts a group of the sequence's run in every track builder (`startGroup`), adds its entries, then ends the group (`endGroup`). The resolver keeps the runs of the groups started (`startedGroups`), and a track builder made while they are starts them too. So every track builder has a group of every sequence, whether or not anything in it is on its track.
+- Each leaf adds a `TrackItemEntry` per target and property, a `TrackEntry` with:
   - `start`: its sequence's `start` (0 for an animation on its own) + its position + the target's delay;
   - `duration` and its repeats from its own plan, and its `easing` and `stops`;
-  - `repeatingParents`: the timings of the repeating sequences around it, the outermost first. A sequence that doesn't repeat isn't among them. One sequence's entries share one timing object, which stands for the sequence;
   - `path`: its entry path (`naming.entryPathOf`).
 
-**2a. Assemble** (`TrackEntryAssembler`, `src/tracks/track-entry-assembler.ts`). Turns the entries into builders, in stacking order:
-1. **Sort.** By start (`byStart`), ties in declaration order (the sort is stable). This is the stacking order: an entry shows over the ones before it, except a merged builder's continuations, which go right under it.
-2. **Group** (`groupedByRepeatingParent(entries, depth)`, in one pass, through `getOrInsertComputed`) by the repeating sequence (`repeats`: its `repeatCount` is above 0) `depth` sequences in, `repeatingParents[depth]`: 0 here, the outermost. It gives:
-    - `timings`: what one builder each lays out and repeats as one, where its first entry is, in stacking order: an entry with no repeating sequence around it there, or that sequence's timing;
-    - `groups` (`EntriesBySequence`): each of those sequences' entries, in stacking order, by its timing. A timing with no group is an entry.
-3. **Build.** For each timing, its continuations (below), then its own builder (`builderOf`):
-    - **Layered**, an entry (an infinite one included): its iteration with its own repeats (`TrackRunBuilder.fromStops`). WAAPI shows a later effect over an earlier one, and the earlier one again once it ends, so these never merge.
-    - **Merged**, a repeating sequence: the builders of the units in it (`unitBuildersOf`, below), merged into its iteration and repeated as the sequence does (`merge`, `TrackRunBuilder.fromChildren`). A unit of one entry is merged too, so it repeats as its sequences do.
-    - **Continuations** (`continuationsUnder`), before a merged builder: for each entry in it, the outermost of its chain (its repeating sequences inside the unit's own, then itself) that repeats forever (`repeatingForeverIn`, `repeatsForever`). Nothing around it repeats forever, so it carries on under the merged builder once that ends. Each is a new builder from its unit, named after what it continues, sorted by start. An entry has none, and neither does a sequence that repeats forever itself, since it never ends.
+**Track builders** (`TrackBuilder`, `src/tracks/tracks.ts`) hold a track's entries in the groups of the sequences around them:
 
-`TrackBuilder` passes the builders to `layer` in that order, so each one is over the ones before it, and the continuations are under their builder.
+| Part | What it does |
+|---|---|
+| `rootEntries` | The entries outside every group |
+| `groups` | The groups started and not yet ended, the outermost first, each a `TrackGroupEntry`: a sequence's run, with the `entries` in it, in their order |
+| `activeEntries` | The entries of the group started last, or `rootEntries` without one |
+| `startGroup(parentTiming)` | Pushes a group of the run onto `groups` |
+| `add(entry)` | Pushes an item entry onto the active entries |
+| `endGroup()` | Pops the group started last, and pushes it onto the active entries, as an entry of the group around it. Without a group started, it throws |
+| `build()` | Ends every group still started, then builds the track (2a, 2b) |
 
-**A repeating sequence's units** (`unitBuildersOf`). One iteration of the sequence is one run merged from its units' iterations, each over the ones before it, since only one run can repeat them together.
-- **Units:** its entries grouped by the repeating sequence right inside it, or by themselves without one (`groupedByRepeatingParent(entries, depth + 1)`).
-- **Builders:** an entry's is its iteration. A repeating sequence's is its own merged iteration built first, by recursion, then repeated by `TrackRunBuilder.fromChildren`. So repeats are always a track run builder's job.
-- **Repeating forever:** a unit that repeats forever is built without repeats, so it plays once in the iteration (`withoutRepeatingForever`). A finitely repeating unit plays all its repeats in it.
-- The builders go to `merge`, below.
+Once built, a track builder is closed: `startGroup`, `add`, `endGroup` and `build` throw.
 
-**Merging** (`merge(name, timing, units)`, in `src/tracks/track-entry-assembler.ts`). The builder of the sequence's iteration, merged from the units that show:
-1. **Showing.** The units go through `layOver`, as a track's builders do (2b), so a unit that a later one covers is left out.
+**2a. Build** (`TrackBuilder.build`). Turns the root entries into builders (`buildersOf`), in declaration order:
+- **An item entry** (an infinite one included): its iteration with its own repeats (`TrackRunBuilder.fromStops`). WAAPI shows a later effect over an earlier one, and the earlier one again once it ends, so these never merge.
+- **A group that doesn't repeat:** its entries' builders, in its place.
+- **A repeating group** (`repeats`: its `repeatCount` is above 0): one merged builder, with its continuations (`mergedBuilderOf`, below).
+
+Then it sorts them by start (`byStart`), ties in declaration order (the sort is stable). This is the stacking order: a builder shows over the ones before it. A final pass puts each merged builder's continuations right before it, from a `ContinuationsByBuilder` map, so they're under it, and passes them all to `layer` in that order.
+
+**A repeating group's builder** (`mergedBuilderOf`). One iteration of the sequence is one run merged from the iterations of the builders in it, each over the ones before it, since only one run can repeat them together.
+- **Builders:** its entries' builders (`buildersOf`), sorted by start. A repeating group in it is merged first, by recursion, then repeated by `TrackRunBuilder.fromChildren`. So repeats are always a track run builder's job.
+- **Repeating forever:** a builder that repeats forever plays once in the iteration, through `withoutRepeatingForever()`, a copy of it without repeats. A finitely repeating builder plays all its repeats in it.
+- **Merged** (`merge`, below) with the group's run, its `entries` left out, and named from the paths of the item entries in it at any depth, by start (`itemEntriesIn`, `nameOf`).
+- **Continuations**, against the merged builder in the map: the outermost builders in it, at any depth, that repeat forever: each of its builders that does, and the continuations of each that ends, sorted by start. Nothing around them repeats forever, so they carry on under the merged builder once that ends. Each is the builder that repeats forever itself, so it's named after what it continues, and shares its values with the copy merged in: a missing value the merge gives the copy, it has too. A group that repeats forever itself has none, since it never ends.
+- A group without item entries in it, at any depth, has no builder.
+
+**Merging** (`merge(name, timing, builders)`, in `src/tracks/track-layering.ts`). The builder of the sequence's iteration, merged from the builders that show:
+1. **Showing.** The builders go through `layOver`, as a track's do (2b), so one that a later one covers is left out.
 2. **Values.** `resolveMissingValues` gives the ones that show their missing values, by the same rules as a track's.
     - A missing start that nothing ends by, or a missing end that nothing starts after, stays missing. That leaves the merged builder's own start and end to the track it's laid on; any other builds into the current value.
-3. **Iteration** (`TrackRunBuilder.fromChildren`). Without units, it throws. Each unit's iterations, one after another, after the first, against the spans so far:
+3. **Iteration** (`TrackRunBuilder.fromChildren`). Without builders, it throws. Each one's iterations, one after another, after the first, against the spans so far:
     - **Starts before they end** (a shared start included): it replaces their spans while it lasts (`overlaySpans`). A span it cuts (`cutSpans`) gets the cut easing (`Easing.segment`), and keeps its stops between the lowest and highest progress that easing reaches, with a stop added at the progress's extrema on it, where it starts, turns and ends (`progressExtremaOf`, `narrowStops`). Values stay on the same lines.
     - **Starts at or after their end:** it follows, with their end value held until then (`joinSpans`).
 
@@ -808,7 +818,7 @@ A missing value without a neighbor stays missing: its builder builds it into the
 
 Continuations of what repeats forever never end, so they take no end and never hold after, like any builder that repeats forever.
 
-**Run builders** (`TrackRunBuilder`, `src/tracks/track-run-builder.ts`). Each has a name, a `TrackRunTiming`, and the spans of its iteration from the timing's start, as `PendingValue`s: an entry's iteration, or a repeating sequence's merged iteration. It lays out its iterations through `iterationSpansOf` (below), and builds the one `TrackRun`.
+**Run builders** (`TrackRunBuilder`, `src/tracks/track-run-builder.ts`). Each has a name, a `TrackEntry`, and the spans of its iteration from the timing's start, as `PendingValue`s: an entry's iteration, or a repeating sequence's merged iteration. It lays out its iterations through `iterationSpansOf` (below), and builds the one `TrackRun`.
 
 | Part | What it does |
 |---|---|
@@ -821,12 +831,13 @@ Continuations of what repeats forever never end, so they take no end and never h
 | `startValue`, `endValue` | The value its first iteration starts on, and the value its last iteration ends on |
 | `hasMissingStartValue`, `hasMissingEndValue` | Whether the value is missing. One that never ends has no end to miss |
 | `assignStartValueIfMissing(value)`, `assignEndValueIfMissing(value)` | A missing start or end takes `value`: another builder's value at a time, which is a stop's value or an `InterpolationToken`, another's end value, or the `CurrentValueToken`. They do nothing when the value isn't missing, or `value` depends on it |
+| `withoutRepeatingForever()` | Itself when it ends; otherwise a builder of its first iteration only, without repeats, with the same spans, so a value assigned to one is the other's too |
 | `holdBefore()`, `holdAfter()` | Makes it hold its start value before it, or its end value after it |
 | `build()` | The track run: its name, its timing, its spans with each placeholder as its value, or the `CurrentValueToken` without one, each interpolated value resolved once (`TrackRunSpan.map`), and its holds |
 
-`endValue`, `assignEndValueIfMissing` and `merged`, for each child, need an end: on a builder that repeats forever, they throw, saying to check `ends` first.
+`endValue`, `assignEndValueIfMissing` and `fromChildren`, for each child, need an end: on a builder that repeats forever, they throw, saying to check `ends` first.
 
-**Track runs** (`src/tracks/track-runs.ts`). A `Track` (`src/tracks/tracks.ts`) is its runs in stacking order. Next to `TrackRunTiming`, `repeats(timing)` and `repeatsForever(timing)` say whether a run repeats, and whether it repeats forever; `TrackRunBuilder` and `TrackEntryAssembler` use them.
+**Track runs** (`src/tracks/track-runs.ts`). A `Track` (`src/tracks/tracks.ts`) is its runs in stacking order. Next to `TrackEntry`, `repeats(timing)` and `repeatsForever(timing)` say whether a run repeats, and whether it repeats forever; `TrackRunBuilder` and `TrackBuilder` use them.
 
 | Part | What it is |
 |---|---|

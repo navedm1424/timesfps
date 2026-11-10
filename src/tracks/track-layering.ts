@@ -1,6 +1,6 @@
 import {resolveMissingValues} from "./missing-values.ts";
 import {TrackRunBuilder} from "./track-run-builder.ts";
-import type {TrackRun, TrackRunTiming} from "./track-runs.ts";
+import type {TrackEntry, TrackRun} from "./track-runs.ts";
 import type {TrackValue} from "./track-values.ts";
 
 /** The builders that show once `top` is laid over them: the ones it covers never show. */
@@ -34,7 +34,7 @@ export function layer(builders: readonly TrackRunBuilder[]): TrackRun<TrackValue
  * each over the ones before it, their missing values taken as they layer, merged into it (`TrackRunBuilder.fromChildren`).
  * A missing start that nothing ends by, or a missing end that nothing starts after, stays missing. Throws without builders.
  */
-export function merge(name: string | undefined, timing: TrackRunTiming, builders: readonly TrackRunBuilder[]): TrackRunBuilder {
+export function merge(name: string | undefined, timing: TrackEntry, builders: readonly TrackRunBuilder[]): TrackRunBuilder {
     const showing = builders.reduce<TrackRunBuilder[]>(layOver, []);
     resolveMissingValues(showing);
     return TrackRunBuilder.fromChildren(name, timing, showing);

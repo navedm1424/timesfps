@@ -4,7 +4,7 @@ import type {TweenStops} from "../tween-stops.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import {clamp} from "../utils/math.ts";
-import {iterationSpansOf, joinSpans, repeatsForever, TrackRun, TrackRunSpan, type TrackRunTiming, type TrackStop} from "./track-runs.ts";
+import {iterationSpansOf, joinSpans, repeatsForever, type TrackEntry, TrackRun, TrackRunSpan, type TrackStop} from "./track-runs.ts";
 import {type CurrentValueToken, currentValueToken, type InterpolationToken, type TrackValue} from "./track-values.ts";
 
 /** A missing value, until a value is assigned to it: every span and token that has it then has that value. */
@@ -26,12 +26,12 @@ export class TrackRunBuilder {
     /** `spans` are its iteration, one after another without gaps, from the timing's start. */
     private constructor(
         private readonly name: string | undefined,
-        private readonly timing: TrackRunTiming,
+        private readonly timing: TrackEntry,
         private readonly spans: readonly TrackRunSpan<PendingValue>[]
     ) {}
 
     /** An entry's iteration through its stops, each missing value a placeholder of its own. */
-    static fromStops(name: string | undefined, timing: TrackRunTiming, easing: Easing, stops: TweenStops): TrackRunBuilder {
+    static fromStops(name: string | undefined, timing: TrackEntry, easing: Easing, stops: TweenStops): TrackRunBuilder {
         const spanStops = stops.stops.map(({offset, value}) => ({offset, value: value ?? placeholder()}));
         return new TrackRunBuilder(name, timing, [new TrackRunSpan(0, timing.duration, easing, spanStops)]);
     }
@@ -41,7 +41,7 @@ export class TrackRunBuilder {
      * One that starts within the ones before it replaces them while it lasts; one that starts where they end, or later, follows them, their end value held until then.
      * Throws without children; each one must end.
      */
-    static fromChildren(name: string | undefined, timing: TrackRunTiming, children: readonly TrackRunBuilder[]): TrackRunBuilder {
+    static fromChildren(name: string | undefined, timing: TrackEntry, children: readonly TrackRunBuilder[]): TrackRunBuilder {
         if (!children.length)
             throw new Error("A repeating sequence's iteration merges the iterations of the runs in it, but it was given none. Merge at least one.");
         const [first, ...rest] = children.map(child => {

@@ -12,7 +12,7 @@ import {type InterpolationToken, valueBetween} from "./track-values.ts";
 export type Oscillation = 'time' | 'values';
 
 /** When a run starts, how long each of its iterations lasts, and how it repeats; one without duration doesn't repeat. */
-export interface TrackRunTiming {
+export interface TrackEntry {
     /** After the outermost definition starts. */
     start: Seconds;
     duration: Seconds;
@@ -25,12 +25,12 @@ export interface TrackRunTiming {
 }
 
 /** Whether it repeats; one without duration never does. */
-export function repeats({repeatCount}: TrackRunTiming): boolean {
+export function repeats({repeatCount}: TrackEntry): boolean {
     return repeatCount > 0;
 }
 
 /** Whether it repeats forever; one without duration never does. */
-export function repeatsForever({repeatCount}: TrackRunTiming): boolean {
+export function repeatsForever({repeatCount}: TrackEntry): boolean {
     return repeatCount === Infinity;
 }
 
@@ -99,7 +99,7 @@ export class TrackRun<Value> {
     /** `spans` are one after another without gaps, from the timing's start. Throws without spans. */
     constructor(
         readonly name: string | undefined,
-        readonly timing: TrackRunTiming,
+        readonly timing: TrackEntry,
         readonly spans: readonly TrackRunSpan<Value>[],
         /** Whether it holds the value it starts on before it starts. */
         readonly holdsBefore: boolean,
@@ -123,7 +123,7 @@ export class TrackRun<Value> {
  * Throws without spans, or for iterations the run doesn't have.
  */
 export function iterationSpansOf<Value>(
-    timing: TrackRunTiming,
+    timing: TrackEntry,
     spans: readonly TrackRunSpan<Value>[],
     first: number,
     last: number,
@@ -151,7 +151,7 @@ export function joinSpans<Value>(groups: readonly (readonly TrackRunSpan<Value>[
 }
 
 /** The spans of one iteration in the iteration at `index`, after the outermost definition starts. */
-function iterationAt<Value>({start, duration, repeatDelay, oscillate}: TrackRunTiming, spans: readonly TrackRunSpan<Value>[], index: number): TrackRunSpan<Value>[] {
+function iterationAt<Value>({start, duration, repeatDelay, oscillate}: TrackEntry, spans: readonly TrackRunSpan<Value>[], index: number): TrackRunSpan<Value>[] {
     const iteration = index % 2 === 0 || !oscillate ? spans : flipSpans(spans, duration, oscillate);
     return iteration.map(span => span.shift(start + index * (duration + repeatDelay)));
 }
