@@ -1,13 +1,13 @@
 import type {CSSValue} from "../dom/mapping.ts";
 import type {Easing} from "../easing.ts";
 import type {TweenStops} from "../tween-stops.ts";
-import type {Progress, Seconds} from "../types.ts";
+import type {Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import {clamp} from "../utils/math.ts";
-import {iterationSpansOf, joinSpans, repeatsForever, type TrackEntry, TrackRun, TrackRunSpan, type TrackStop} from "./track-runs.ts";
+import {joinClips, moveClips, partOf, repeatsForever, TrackClip, type TrackEntry, TrackRun, type TrackRunPart} from "./track-runs.ts";
 import {type CurrentValueToken, currentValueToken, type InterpolationToken, type TrackValue} from "./track-values.ts";
 
-/** A missing value, until a value is assigned to it: every span and token that has it then has that value. */
+/** A missing value, until a value is assigned to it: every clip and token that has it then has that value. */
 interface Placeholder {
     type: 'placeholder';
     value: PendingValue | undefined;
@@ -23,38 +23,39 @@ export class TrackRunBuilder {
     private holdsBefore = false;
     private holdsAfter = false;
 
-    /** `spans` are its iteration, one after another without gaps, from the timing's start. */
+    /** `clips` are its iteration, one after another without gaps, their offsets fractions of it. */
     private constructor(
         private readonly name: string | undefined,
         private readonly timing: TrackEntry,
-        private readonly spans: readonly TrackRunSpan<PendingValue>[]
+        private readonly clips: readonly TrackClip<PendingValue>[]
     ) {}
 
     /** An entry's iteration through its stops, each missing value a placeholder of its own. */
     static fromStops(name: string | undefined, timing: TrackEntry, easing: Easing, stops: TweenStops): TrackRunBuilder {
-        const spanStops = stops.stops.map(({offset, value}) => ({offset, value: value ?? placeholder()}));
-        return new TrackRunBuilder(name, timing, [new TrackRunSpan(0, timing.duration, easing, spanStops)]);
+        const clipStops = stops.stops.map(({offset, value}) => ({offset, value: value ?? placeholder()}));
+        return new TrackRunBuilder(name, timing, [new TrackClip(0, 1, easing, clipStops)]);
     }
 
     /**
      * A repeating sequence's iteration, the iterations of `children` merged into it in stacking order, each over the ones before it.
      * One that starts within the ones before it replaces them while it lasts; one that starts where they end, or later, follows them, their end value held until then.
-     * Throws without children; each one must end.
+     * Throws without children, or when `timing` has no duration; each one must end.
      */
     static fromChildren(name: string | undefined, timing: TrackEntry, children: readonly TrackRunBuilder[]): TrackRunBuilder {
         if (!children.length)
             throw new Error("A repeating sequence's iteration merges the iterations of the runs in it, but it was given none. Merge at least one.");
+        if (!(timing.duration > 0))
+            throw new Error(`A repeating sequence's iteration places the runs in it as fractions of its duration, which is ${timing.duration}. Merge them into an iteration that lasts some time; one without duration never repeats.`);
         const [first, ...rest] = children.map(child => {
             child.requireEnd("iterations to merge");
-            return child.iterationSpans(0, child.lastIterationIndex);
+            return moveClips(child.part(0, child.lastIterationIndex), timing.start, timing.duration);
         });
-        const spans = rest.reduce(overlaySpans, first!);
-        return new TrackRunBuilder(name, timing, spans.map(span => span.shift(-timing.start)));
+        return new TrackRunBuilder(name, timing, rest.reduce(overlayClips, first!));
     }
 
     /** When its first iteration starts. */
     get start(): Seconds {
-        return this.timing.start + this.spans[0]!.start;
+        return this.iterationAt(0).start;
     }
 
     /** Whether it ends: it doesn't when it repeats forever. */
@@ -64,7 +65,9 @@ export class TrackRunBuilder {
 
     /** When its last iteration ends; `Infinity` when it never ends. */
     get end(): Seconds {
-        return this.ends ? this.iterationAt(this.lastIterationIndex).at(-1)!.end : Infinity;
+        if (!this.ends) return Infinity;
+        const {start, duration} = this.iterationAt(this.lastIterationIndex);
+        return start + duration;
     }
 
     /** Whether it runs at `time`: from its start, up to but not at its end. */
@@ -89,13 +92,13 @@ export class TrackRunBuilder {
 
     /** The value its first iteration starts on. */
     get startValue(): PendingValue {
-        return this.spans[0]!.startValue;
+        return this.clips[0]!.startValue;
     }
 
     /** The value its last iteration ends on; it must end. */
     get endValue(): PendingValue {
         this.requireEnd("end value");
-        return this.iterationAt(this.lastIterationIndex).at(-1)!.endValue;
+        return this.iterationAt(this.lastIterationIndex).clips.at(-1)!.endValue;
     }
 
     /** The value at `time`: its iteration's then, held through the repeat delay after it, and the value it starts on before it, or ends on after it. */
@@ -110,16 +113,15 @@ export class TrackRunBuilder {
         assignIfMissing(this.startValue, value);
     }
 
-    /** Gives a missing end `value`, unless `value` depends on it; it must end. */
+    /** Gives a missing end `value`, unless `value` depends on it; one that never ends has none to take. */
     assignEndValueIfMissing(value: PendingValue): void {
-        assignIfMissing(this.endValue, value);
+        if (this.ends) assignIfMissing(this.endValue, value);
     }
 
     /** Itself when it ends; otherwise a builder of its first iteration only, without repeats, with the same values, so a value assigned to one is the other's too. */
-    withoutRepeatingForever(): TrackRunBuilder {
-        if (this.ends) return this;
-        const {start, duration} = this.timing;
-        return new TrackRunBuilder(this.name, {start, duration, repeatCount: 0, repeatDelay: 0}, this.spans);
+    withoutRepeats(): TrackRunBuilder {
+        const {oscillate: _, ...rest} = this.timing;
+        return new TrackRunBuilder(this.name, {...rest, repeatCount: 0, repeatDelay: 0}, this.clips);
     }
 
     /** Makes it hold the value it starts on before it starts. */
@@ -135,8 +137,8 @@ export class TrackRunBuilder {
     /** The track run: each placeholder with its value, or the property's current value without one, and whether it holds before and after it. */
     build(): TrackRun<TrackValue> {
         const trackValuesByToken = new Map<InterpolationToken<PendingValue>, TrackValue>();
-        const spans = this.spans.map(span => span.map(value => trackValueOf(value, trackValuesByToken)));
-        return new TrackRun(this.name, this.timing, spans, this.holdsBefore, this.holdsAfter);
+        const clips = this.clips.map(clip => clip.map(value => trackValueOf(value, trackValuesByToken)));
+        return new TrackRun(this.name, this.timing, clips, this.holdsBefore, this.holdsAfter);
     }
 
     /** The index of its last iteration: its repeat count, `Infinity` when it repeats forever. */
@@ -150,71 +152,39 @@ export class TrackRunBuilder {
             throw new Error(`A track run builder that repeats forever never ends, so it has no ${what}. Check \`ends\` first, or build it so it doesn't repeat forever.`);
     }
 
-    /** Its iterations from `first` to `last`, one after another, after the outermost definition starts. */
-    private iterationSpans(first: number, last: number): TrackRunSpan<PendingValue>[] {
-        return iterationSpansOf(this.timing, this.spans, first, last);
+    /** Its iterations from `first` to `last`, one after another. */
+    private part(first: number, last: number): TrackRunPart<PendingValue> {
+        return partOf(this.timing, this.clips, first, last);
     }
 
-    /** Its iteration at `index`, after the outermost definition starts. */
-    private iterationAt(index: number): TrackRunSpan<PendingValue>[] {
-        return this.iterationSpans(index, index);
+    /** Its iteration at `index`. */
+    private iterationAt(index: number): TrackRunPart<PendingValue> {
+        return this.part(index, index);
     }
 }
 
-/** The value at `time` of spans one after another, which is the next span's start where two meet. */
-function valueAtTimeOf(spans: readonly TrackRunSpan<PendingValue>[], time: Seconds): PendingValue {
-    const span = spans.findLast(span => span.start <= time) ?? spans[0]!;
-    return span.valueAtProgress(progressAt(span, time));
-}
-
-/** The span's progress at `time`: where its easing starts before it, and where it ends after it. */
-function progressAt({start, end, easing}: TrackRunSpan<unknown>, time: Seconds): Progress {
-    if (time >= end) return easing.endProgress;
-    if (time <= start) return easing.startProgress;
-    return easing.progressAt((time - start) / (end - start));
+/** The value of the part at `time`, which is the next clip's start where two meet. */
+function valueAtTimeOf({start, duration, clips}: TrackRunPart<PendingValue>, time: Seconds): PendingValue {
+    const offset = duration === 0 ? (time >= start ? Infinity : -Infinity) : (time - start) / duration;
+    const clip = clips.findLast(clip => clip.startOffset <= offset) ?? clips[0]!;
+    return clip.valueAt(offset);
 }
 
 /**
- * The spans with `top`'s in place of their own for as long as `top` lasts,
+ * The clips with `top`'s in place of their own for as long as `top` lasts, all placed in the same time,
  * or, when `top` starts where they end or later, followed by `top`'s, their end value held until then.
  */
-function overlaySpans(below: readonly TrackRunSpan<PendingValue>[], top: readonly TrackRunSpan<PendingValue>[]): TrackRunSpan<PendingValue>[] {
-    const start = below[0]!.start;
-    const end = below.at(-1)!.end;
-    const topStart = top[0]!.start;
-    if (topStart >= end) return joinSpans([below, top]);
-    return [...cutSpans(below, start, topStart), ...top, ...cutSpans(below, top.at(-1)!.end, end)];
+function overlayClips(below: readonly TrackClip<PendingValue>[], top: readonly TrackClip<PendingValue>[]): TrackClip<PendingValue>[] {
+    const start = below[0]!.startOffset;
+    const end = below.at(-1)!.endOffset;
+    const topStart = top[0]!.startOffset;
+    if (topStart >= end) return joinClips([below, top]);
+    return [...trimClips(below, start, topStart), ...top, ...trimClips(below, top.at(-1)!.endOffset, end)];
 }
 
-/**
- * The part of the spans from `start` to `end`. A span cut through its easing keeps the stops its cut easing reaches, where they are,
- * with a stop at each progress the cut easing starts, turns and ends at that has none: the value there.
- * A span without duration stays from `start` up to, but not at, `end`.
- */
-function cutSpans(spans: readonly TrackRunSpan<PendingValue>[], start: Seconds, end: Seconds): TrackRunSpan<PendingValue>[] {
-    return spans.flatMap((span): TrackRunSpan<PendingValue>[] => {
-        if (span.end === span.start) return span.start >= start && span.start < end ? [span] : [];
-        const cutStart = Math.max(span.start, start);
-        const cutEnd = Math.min(span.end, end);
-        if (cutEnd <= cutStart) return [];
-        if (cutStart === span.start && cutEnd === span.end) return [span];
-
-        const offsetOf = (time: Seconds) => (time - span.start) / (span.end - span.start);
-        const easing = span.easing.segment(offsetOf(cutStart), offsetOf(cutEnd));
-        return [new TrackRunSpan(cutStart, cutEnd, easing, narrowStops(span, progressExtremaOf(easing)))];
-    });
-}
-
-/** The span's stops between the lowest and the highest of the progresses, with a stop of the value there at each of the progresses that has none; offsets stay as they are. */
-function narrowStops(span: TrackRunSpan<PendingValue>, progresses: readonly Progress[]): TrackStop<PendingValue>[] {
-    const reached = span.stopsBetween(Math.min(...progresses), Math.max(...progresses)).map(({offset}) => offset);
-    const offsets = [...new Set([...reached, ...progresses])].sort((first, second) => first - second);
-    return offsets.map(offset => ({offset, value: span.valueAtProgress(offset)}));
-}
-
-/** The progresses the easing's window starts at, turns at and ends at. */
-function progressExtremaOf(easing: Easing): Progress[] {
-    return [easing.startProgress, ...easing.turningOffsets().map(offset => easing.progressAt(offset)), easing.endProgress];
+/** The clips, each trimmed to `start` to `end` (`TrackClip.trim`). */
+function trimClips(clips: readonly TrackClip<PendingValue>[], start: number, end: number): TrackClip<PendingValue>[] {
+    return clips.flatMap(clip => clip.trim(start, end) ?? []);
 }
 
 function placeholder(): Placeholder {

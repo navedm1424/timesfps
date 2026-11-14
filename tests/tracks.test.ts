@@ -721,7 +721,7 @@ describe("NativeEffectsResolver values passed through", () => {
         expect(textsOf(effect!)).toEqual(['red', 'white', 'blue']);
     });
 
-    it("passes values through when each span is one whole native easing between two stops", () => {
+    it("passes values through when each clip is one whole native easing between two stops", () => {
         const [effect] = resolvedWith(AnimationTiming.of({duration: 1, easing: 'easeOut'}, {repeat: 1, repeatDelay: 0.5}), {color: {0: 'red', 1: 'blue'}}).color!;
         expect(textsOf(effect!)).toEqual(['red', 'blue', 'blue']);
     });

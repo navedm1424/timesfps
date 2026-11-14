@@ -74,7 +74,7 @@ class MissingValuesResolver {
         for (const [builder, neighbor] of this.startNeighbors)
             if (neighbor) builder.assignStartValueIfMissing(neighbor.endValue);
         for (const [builder, neighbor] of this.endNeighbors)
-            if (neighbor) builder.assignEndValueIfMissing(neighbor.valueAt(neighbor.start));
+            if (neighbor) builder.assignEndValueIfMissing(neighbor.startValue);
     }
 
     /** A value still missing after its neighbor's, because the neighbor's is missing too, takes the current value. */

@@ -35,7 +35,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/navedm1424/times-fps.git"
+    "url": "git+https://github.com/navedm1424/timesfps.git"
   },
   "devDependencies": {
     "@types/node": "^25.3.5",

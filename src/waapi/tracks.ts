@@ -1,5 +1,5 @@
 import {type ByElementAndProperty, mapByElementAndProperty} from "../dom/mapping.ts";
-import type {TrackRun, TrackRunSpan} from "../tracks/track-runs.ts";
+import type {TrackClip, TrackRun, TrackRunPart} from "../tracks/track-runs.ts";
 import type {Tracks} from "../tracks/tracks.ts";
 import type {TrackValue} from "../tracks/track-values.ts";
 import type {Seconds} from "../types.ts";
@@ -17,11 +17,11 @@ export interface PlacedEffect {
     iterations: number;
     direction: PlaybackDirection;
     fill: FillMode;
-    /** In the time of one iteration, from 0 to `duration`. */
-    spans: readonly TrackRunSpan<TrackValue>[];
+    /** Their offsets fractions of one iteration of it. */
+    clips: readonly TrackClip<TrackValue>[];
 }
 
-type EffectTiming = Pick<PlacedEffect, 'delay' | 'duration' | 'iterations' | 'direction' | 'spans'>;
+type EffectTiming = Pick<PlacedEffect, 'delay' | 'duration' | 'iterations' | 'direction' | 'clips'>;
 
 /**
  * Turns tracks into WAAPI effects, in their tracks' order.
@@ -55,7 +55,7 @@ class TrackValueTexts {
 
     /** Throws for a given value of the run that the property doesn't take, whether a keyframe shows it or not. */
     checkGivenValuesOf(run: TrackRun<TrackValue>): void {
-        for (const {stops} of run.spans) {
+        for (const {stops} of run.clips) {
             for (const {value} of stops) {
                 for (const givenValue of givenValuesOf(value)) this.textOf(givenValue);
             }
@@ -97,34 +97,33 @@ function nativeTimingOf(run: TrackRun<TrackValue>): PlacedEffect[] {
     });
 }
 
-/** The timing of an effect that plays the spans, from where they start. */
-function timingOf(spans: readonly TrackRunSpan<TrackValue>[], iterations = 1, direction: PlaybackDirection = 'normal'): EffectTiming {
-    const start = spans[0]!.start;
-    return {spans: spans.map(span => span.shift(-start)), delay: start, duration: spans.at(-1)!.end - start, iterations, direction};
+/** The timing of an effect that plays the part, from where it starts. */
+function timingOf({start, duration, clips}: TrackRunPart<TrackValue>, iterations = 1, direction: PlaybackDirection = 'normal'): EffectTiming {
+    return {clips, delay: start, duration, iterations, direction};
 }
 
 /** The run's repeats as WAAPI iterations. */
 function nativelyRepeated(run: TrackRun<TrackValue>): EffectTiming[] {
-    const {timing: {duration: iterationDuration, repeatCount, repeatDelay, oscillate}, spans} = run;
+    const {timing: {repeatCount, repeatDelay, oscillate}, clips} = run;
     const repeatsForever = !Number.isFinite(repeatCount);
     const playCount = repeatCount + 1;
-    const iteration = (index: number) => run.iterationSpans(index, index);
+    const iteration = (index: number) => run.part(index, index);
 
     // iteration
     if (repeatCount === 0)
         return [timingOf(iteration(0))];
 
     // iteration × playCount, alternating when it oscillates in time
-    if (oscillate !== 'values' && repeatDelay === 0 && spans[0]!.start === 0 && spans.at(-1)!.end === iterationDuration)
+    if (oscillate !== 'values' && repeatDelay === 0 && clips[0]!.startOffset === 0 && clips.at(-1)!.endOffset === 1)
         return [timingOf(iteration(0), playCount, oscillate === 'time' ? 'alternate' : 'normal')];
 
     // [iteration+hold] × repeatCount, then iteration on its own; [iteration+hold] × ∞ when repeating forever
     if (!oscillate) {
-        const repeating = timingOf(run.iterationSpans(0, 0, {holdsUntilNext: true}), repeatCount);
+        const repeating = timingOf(run.part(0, 0, {holdsUntilNext: true}), repeatCount);
         return repeatsForever ? [repeating] : [repeating, timingOf(iteration(repeatCount))];
     }
 
-    const repeatingPairs = (iterations: number) => timingOf(run.iterationSpans(0, 1, {holdsUntilNext: true}), iterations);
+    const repeatingPairs = (iterations: number) => timingOf(run.part(0, 1, {holdsUntilNext: true}), iterations);
 
     // [iteration+hold, flipped+hold] × ∞
     if (repeatsForever)
@@ -134,7 +133,7 @@ function nativelyRepeated(run: TrackRun<TrackValue>): EffectTiming[] {
     if (playCount % 2 === 1)
         return [repeatingPairs(repeatCount / 2), timingOf(iteration(repeatCount))];
 
-    const finalPair = timingOf(run.iterationSpans(repeatCount - 1, repeatCount));
+    const finalPair = timingOf(run.part(repeatCount - 1, repeatCount));
 
     // [iteration+hold, flipped] on its own
     if (playCount === 2)

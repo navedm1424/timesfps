@@ -2,7 +2,7 @@ import type {CubicBezier} from "../cubic-bezier.ts";
 import {CubicBezierEasing, type CubicBezierEasingParams, type Easing, LinearEasing, SpringEasing, StepsEasing} from "../easing.ts";
 import {linear} from "../easing-specifier.ts";
 import type {DampedSpring} from "../damped-spring.ts";
-import type {TrackRunSpan} from "../tracks/track-runs.ts";
+import type {TrackClip} from "../tracks/track-runs.ts";
 import {type TrackValue, valueBetween} from "../tracks/track-values.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {clamp, invLerp, lerp} from "../utils/math.ts";
@@ -32,31 +32,31 @@ export interface NativeAnimationEffect {
 }
 
 /**
- * The effect named `name`, with its values as `textOf` gives them and its spans' easings as WAAPI ones.
- * A single whole play keeps its easing on the effect, with the stops as linear keyframes; otherwise the easings are split into the keyframes.
+ * The effect named `name`, with its values as `textOf` gives them and its clips' easings as WAAPI ones.
+ * A single whole iteration keeps its easing on the effect, with the stops as linear keyframes; otherwise the easings are windowed and split into the keyframes.
  */
 export function nativeEffectOf(
-    {spans, delay, duration, iterations, direction, fill}: PlacedEffect,
+    {clips, delay, duration, iterations, direction, fill}: PlacedEffect,
     name: string | undefined,
     textOf: (value: TrackValue) => string
 ): NativeAnimationEffect {
     const timing = {delay, duration, iterations, direction, fill, name};
-    if (easesOnEffect(spans, duration)) {
-        const [span] = spans;
-        return {...timing, easing: wholeNativeEasingOf(span!.easing), keyframes: span!.stops.map(({offset, value}) => ({offset, value: textOf(value)}))};
+    if (easesOnEffect(clips)) {
+        const [clip] = clips;
+        return {...timing, easing: wholeNativeEasingOf(clip!.windowedEasing), keyframes: clip!.stops.map(({offset, value}) => ({offset, value: textOf(value)}))};
     }
     if (duration === 0)
-        return {...timing, easing: {type: 'linear'}, keyframes: [{offset: 0, value: textOf(spans[0]!.startValue)}, {offset: 1, value: textOf(spans.at(-1)!.endValue)}]};
-    return {...timing, easing: {type: 'linear'}, keyframes: keyframesOf(spans, duration, textOf)};
+        return {...timing, easing: {type: 'linear'}, keyframes: [{offset: 0, value: textOf(clips[0]!.startValue)}, {offset: 1, value: textOf(clips.at(-1)!.endValue)}]};
+    return {...timing, easing: {type: 'linear'}, keyframes: keyframesOf(clips, textOf)};
 }
 
-function easesOnEffect(spans: readonly TrackRunSpan<TrackValue>[], duration: Seconds): boolean {
-    const [span, ...otherSpans] = spans;
-    return !!span && otherSpans.length === 0 && span.start === 0 && span.end === duration && runsOnEffect(span);
+function easesOnEffect(clips: readonly TrackClip<TrackValue>[]): boolean {
+    const [clip, ...otherClips] = clips;
+    return !!clip && otherClips.length === 0 && clip.startOffset === 0 && clip.endOffset === 1 && runsOnEffect(clip);
 }
 
-function runsOnEffect({easing, stops}: TrackRunSpan<TrackValue>): boolean {
-    return easing.isWhole && !(easing instanceof SpringEasing) && stops.every(({offset}) => offset >= 0 && offset <= 1);
+function runsOnEffect({windowedEasing, stops}: TrackClip<TrackValue>): boolean {
+    return windowedEasing.isWhole && !(windowedEasing instanceof SpringEasing) && stops.every(({offset}) => offset >= 0 && offset <= 1);
 }
 
 function wholeNativeEasingOf(easing: Easing): NativeEasing {
@@ -65,12 +65,12 @@ function wholeNativeEasingOf(easing: Easing): NativeEasing {
     return {type: 'linear'};
 }
 
-function keyframesOf(spans: readonly TrackRunSpan<TrackValue>[], duration: Seconds, textOf: (value: TrackValue) => string): NativeKeyframe[] {
+function keyframesOf(clips: readonly TrackClip<TrackValue>[], textOf: (value: TrackValue) => string): NativeKeyframe[] {
     const keyframes: NativeKeyframe[] = [];
-    for (const span of spans) {
-        if (span.end < span.start) continue;
-        const offsetAt = (spanOffset: number) => lerp(span.start, span.end, spanOffset) / duration;
-        for (const piece of keyframedPiecesOf(span)) {
+    for (const clip of clips) {
+        if (clip.endOffset < clip.startOffset) continue;
+        const offsetAt = (clipOffset: number) => lerp(clip.startOffset, clip.endOffset, clipOffset);
+        for (const piece of keyframedPiecesOf(clip)) {
             const startOffset = offsetAt(piece.startOffset);
             const startText = textOf(piece.startValue);
             const last = keyframes.at(-1);
@@ -89,7 +89,7 @@ function keyframesOf(spans: readonly TrackRunSpan<TrackValue>[], duration: Secon
     return keyframes;
 }
 
-/** A stretch of a span between two keyframes; offsets are fractions of the span. */
+/** A stretch of a clip between two keyframes; offsets are fractions of the clip. */
 interface KeyframedPiece {
     startOffset: number;
     endOffset: number;
@@ -98,7 +98,7 @@ interface KeyframedPiece {
     easing?: NativeEasing;
 }
 
-/** A part of a span's easing whose progress is `fromProgress` to `toProgress` scaled by its own; offsets are fractions of the span. */
+/** A part of a clip's windowed easing whose progress is `fromProgress` to `toProgress` scaled by its own; offsets are fractions of the clip. */
 interface CurveSegment {
     startOffset: number;
     endOffset: number;
@@ -108,15 +108,15 @@ interface CurveSegment {
 }
 
 /**
- * The span as pieces that each ease between two values: one jump for a span without duration.
- * Otherwise its easing is split wherever it passes a stop, and wherever it turns back, so the value runs linearly with the progress within each piece.
+ * The clip as pieces that each ease between two values: one jump for a jump.
+ * Otherwise its windowed easing is split wherever it passes a stop, and wherever it turns back, so the value runs linearly with the progress within each piece.
  * With only two stops, it runs so everywhere, even past them, so only a spring's turns split it.
  */
-function keyframedPiecesOf(span: TrackRunSpan<TrackValue>): KeyframedPiece[] {
-    const {start, end, easing, stops} = span;
-    if (end === start) return [{startOffset: 0, endOffset: 1, startValue: span.startValue, endValue: span.endValue}];
+function keyframedPiecesOf(clip: TrackClip<TrackValue>): KeyframedPiece[] {
+    const {windowedEasing: easing, stops} = clip;
+    if (clip.isJump) return [{startOffset: 0, endOffset: 1, startValue: clip.startValue, endValue: clip.endValue}];
     const segments = stops.length === 2 && !(easing instanceof SpringEasing) ? curveSegmentsOf(easing) : curveSegmentsOf(easing).flatMap(splitAtTurningPoints);
-    return segments.flatMap(segment => splitAtStops(segment, span));
+    return segments.flatMap(segment => splitAtStops(segment, clip));
 }
 
 /** A spring as the segments of its fitted spline within the window; any other easing as one segment. */
@@ -170,11 +170,11 @@ function splitAtTurningPoints(segment: CurveSegment): CurveSegment[] {
 }
 
 /** Between two passes of stops, the segment's value runs linearly with its progress, so it eases between their values; a piece that splits further takes values between them. */
-function splitAtStops({startOffset, endOffset, easing, fromProgress, toProgress}: CurveSegment, span: TrackRunSpan<TrackValue>): KeyframedPiece[] {
+function splitAtStops({startOffset, endOffset, easing, fromProgress, toProgress}: CurveSegment, clip: TrackClip<TrackValue>): KeyframedPiece[] {
     const progressOf = (easedProgress: Progress) => lerp(fromProgress, toProgress, easedProgress);
     const startEased = easing.startProgress;
     const endEased = easing.endProgress;
-    const crossings = span
+    const crossings = clip
         .stopsBetween(progressOf(startEased), progressOf(endEased))
         .flatMap(({offset: progress, value}) => {
             const eased = invLerp(fromProgress, toProgress, progress);
@@ -183,9 +183,9 @@ function splitAtStops({startOffset, endOffset, easing, fromProgress, toProgress}
         })
         .sort((first, second) => first.offset - second.offset);
     const bounds = [
-        {offset: 0, eased: startEased, value: span.valueAtProgress(progressOf(startEased))},
+        {offset: 0, eased: startEased, value: clip.valueAtProgress(progressOf(startEased))},
         ...crossings,
-        {offset: 1, eased: endEased, value: span.valueAtProgress(progressOf(endEased))}
+        {offset: 1, eased: endEased, value: clip.valueAtProgress(progressOf(endEased))}
     ];
 
     return bounds.slice(1).flatMap((end, index) => {

@@ -184,7 +184,7 @@ class TrackBuilder {
         const builders = this.buildersOf(entries, continuations).toSorted(byStart);
         if (!builders.length) return undefined;
 
-        const merged = merge(this.nameOf(entries), timing, builders.map(builder => builder.withoutRepeatingForever()));
+        const merged = merge(this.nameOf(entries), timing, builders.map(builder => builder.withoutRepeats()));
         if (!repeatsForever(timing))
             continuations.set(merged, builders.flatMap(builder => builder.ends ? continuations.get(builder) ?? [] : [builder]).toSorted(byStart));
         return merged;

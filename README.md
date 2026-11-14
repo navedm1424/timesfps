@@ -36,13 +36,13 @@ Both give you a **definition**, which an **animator** plays (see Controls). `ani
 ```ts
 import {animator, sequence, stagger} from "timesfps";
 
-const page = animator();
+const scope = animator();
 
 // A fade with a CSS easing.
-page.animate('.card', {opacity: [0, 1], scale: [0.95, 1]}, {duration: 0.4, easing: 'easeOut'});
+scope.animate('.card', {opacity: [0, 1], scale: [0.95, 1]}, {duration: 0.4, easing: 'easeOut'});
 
 // A springy pulse that ripples out from the middle dot, forever.
-page.animate('.dot', {scale: [1, 1.4]}, {
+scope.animate('.dot', {scale: [1, 1.4]}, {
     visualDuration: 0.3, bounce: 0.4,
     delay: stagger(0.05, {from: 'center'}),
     repeat: Infinity, repeatMode: 'mirror', repeatDelay: 0.6
@@ -50,12 +50,27 @@ page.animate('.dot', {scale: [1, 1.4]}, {
 
 // A choreographed intro.
 const intro = sequence()
-    .add('h1', {opacity: [0, 1], translate: [-40, 0]}, {duration: 0.6, bounce: 0.2}, {name: 'title'})
-    .add('h2', {opacity: [0, 1]}, {duration: 0.4, easing: 'easeOut'}, {at: '-0.3'})
-    .add('#cta', {scale: [0.8, 1]}, {stiffness: 300, damping: 20}, {at: 'title<+50%'})
+    .add(
+        'h1',
+        {opacity: [0, 1], translate: [-40, 0]},
+        {duration: 0.6, bounce: 0.2},
+        {name: 'title'}
+    )
+    .add(
+        'h2',
+        {opacity: [0, 1]},
+        {duration: 0.4, easing: 'easeOut'},
+        {at: '-0.3'}
+    )
+    .add(
+        '#cta',
+        {scale: [0.8, 1]},
+        {stiffness: 300, damping: 20},
+        {at: 'title<+50%'}
+    )
     .build();
 
-page.animate(intro);
+scope.animate(intro);
 
 // One definition, played in two places: the cards lift one after another, then their icons fade in.
 const cards = sequence()
