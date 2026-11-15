@@ -2,7 +2,7 @@ import type {CubicBezier} from "../cubic-bezier.ts";
 import {CubicBezierEasing, type CubicBezierEasingParams, type Easing, LinearEasing, SpringEasing, StepsEasing} from "../easing.ts";
 import {linear} from "../easing-specifier.ts";
 import type {DampedSpring} from "../damped-spring.ts";
-import type {TrackClip} from "../tracks/track-runs.ts";
+import type {TrackClip} from "./track-clips.ts";
 import {type TrackValue, valueBetween} from "../tracks/track-values.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {clamp, invLerp, lerp} from "../utils/math.ts";

@@ -459,7 +459,7 @@ type AnimationValues = { [property: string]: RawTweenStops };
 
 - **`TweenStops`** (`src/tween-stops.ts`) are one property's stops, in order of offset, with a stop at each end. `TweenStops.of(property, rawStops)` turns a form into them: a form that isn't one value, a list or a keyed object throws a `TypeError`, and so does a value that isn't a number, a string or `null`; keys outside 0–1 throw a `RangeError`, a `null` between the ends is left out, and a form left without values throws a `TypeError`. Its constructor is private, so every instance is one `of` checked.
     - **The ends:** a missing or `null` 0 or 1 becomes a stop whose value is `null`, which stands for the value underneath: as the entry starts at 0, and as it ends at 1.
-    - The values stay as given, numbers or CSS text. Track run builders copy them into stops of their own (§5.4), and the tracks' values are resolved last (§5.6).
+    - The values stay as given, numbers or CSS text. Track entry builders copy them into stops of their own (§5.4), and the tracks' values are resolved last (§5.6).
 - **When the forms are checked:** as the definition is made. An `AnimationDefinition` makes `TweenStops` of every property and keeps them as `stopsByProperty`: in `animation()`, in an inline sequence entry, and for every animation entry of a mapping given to `sequence()`. Playing reads those, and never meets an invalid form.
 - **A missing 0** is the value underneath as the entry starts: the end of the entry before it on its track, or, while another runs under it, the last stop that one reached (§5.4). With neither, or when that's missing too, it's the property's current value when `animate` is called (§5.6).
 - **A missing 1** is the value underneath as the entry ends: the start of the entry after it, or, while another runs under it, the first stop that one reaches next. With neither, or when that's missing too, it's the property's current value.
@@ -539,7 +539,7 @@ When entries animate the same property of the same element (§5.4):
 - Only the entries that start first hold their start values before they start.
 - An entry holds its end values after it ends, unless an entry under it that shows runs on after that.
 - An entry that one over it covers from its start to its end never shows.
-- Entries that a sequence around them repeats merge into one, since a repeat plays all of them again together (§5.4). Sequences don't repeat yet (§8).
+- Entries that a sequence around them repeats stay together, as a group that repeats as the sequence does, since a repeat plays all of them again together (§5.4). Sequences don't repeat yet (§8).
 
 ### 3.7 Playing
 
@@ -566,7 +566,7 @@ abstract class Animator {
 - **`SequenceDefinitionEntries`** (`src/sequence.ts`) are one ordered array, in the order of the timing's entries, as `SequenceTimingEntries` are (§2.7). Each is `{name, animation}` (`AnimationDefinitionEntry`, with an `AnimationDefinition`) or `{name, sequence}` (`SubsequenceDefinitionEntry`, with a `SequenceDefinition`), so every leaf is an `AnimationDefinition`. Positions stay in the timing.
 - **Definitions expose nothing.** Their fields are `@internal`, and so is `AnimationDefinition`'s constructor; `SequenceDefinition`'s is private (§3.5). Besides `SequenceDefinition.of`, they have no methods: animators read their fields.
 - **It always starts playing.** There's no `autoplay`: pausing right after `animate` shows no motion, because no frame renders in between.
-- **Animation `id`s** are the track run's name and the property, `name:property`, or the property alone for an animation on its own. A run from one leaf is named by its path, the entry names leading to the leaf joined by `>` (§2.7); a merged run by its leaves' paths joined by `+` (§5.4).
+- **Animation `id`s** are the track entry's name and the property, `name:property`, or the property alone for an animation on its own. An item is named by its leaf's path, the entry names leading to the leaf joined by `>` (§2.7); a repeating sequence's group by its leaves' paths joined by `+` (§5.4).
 
 ### 3.8 Controls
 
@@ -635,7 +635,7 @@ Every error has the type of what went wrong:
 | `src/animation-timing.ts` | `AnimationTiming`, `AnimationTimingOptions` and `TimedTweenTiming`, with validation and clamping |
 | `src/at.ts` | `At`, `PositionDescriptor`, `parsePositionDescriptor`, `checkPositionDescriptor` and `resolvePosition` |
 | `src/sequence-timing.ts` | `SequenceTimingBuilder`, `SequenceTiming` and its entries, with validation |
-| `src/naming.ts` | `Naming` and `naming`: every naming rule. The names unnamed entries take, entry paths (`EntryPath`), track run names, and native animation ids |
+| `src/naming.ts` | `Naming` and `naming`: every naming rule. The names unnamed entries take, entry paths (`EntryPath`), track entry names (`trackItemNameOf`, `trackGroupNameOf`), and native animation ids |
 | `src/tween-stops.ts` | `TweenStops`: one property's stops, read from their forms and checked, with a stop at each end |
 | `src/animation.ts` | `animation` and `AnimationDefinition` |
 | `src/sequence.ts` | `sequence`, `SequenceDefinition`, `SequenceDefinitionBuilder`, its entries, `Definition` and `EntryPlacementOptions`, and making a sequence timing's entries' definitions from its mapping |
@@ -648,16 +648,17 @@ Every error has the type of what went wrong:
 | `src/utils/records.ts` | Reading numeric-keyed records in order |
 | `src/utils/collections.ts` | `groupBy`, `getOrInsertComputed`, `partitionPoint` (binary search for the first item past a point) |
 | `src/tracks/track-values.ts` | `TrackValue`, and its value tokens `CurrentValueToken` and `InterpolationToken`: a track's values, given or left for the effects stage to work out, `currentValueToken` and `valueBetween` |
-| `src/tracks/track-runs.ts` | `TrackEntry`, with `repeats` and `repeatsForever`, `Oscillation`, `TrackStop`, `TrackClip`, `TrackRunPart`, `TrackRun`, and `partOf`, `moveClips` and `joinClips`: an entry's run, a run's clips, its iterations and its holds; what the tracks stage gives |
-| `src/tracks/track-run-builder.ts` | `TrackRunBuilder`: a track run built step by step, from an entry's iteration with placeholders for its missing values, or a repeating sequence's iteration merged from the builders in it |
+| `src/tracks/track-entries.ts` | `TrackEntry`, with `repeats` and `repeatsForever`, `Oscillation`, `TrackStop` and `valueAtProgress`, and a track's entries, `TrackItem` and `TrackGroup`: an entry's run, its stops, and what the tracks stage gives |
+| `src/tracks/track-entry-builder.ts` | `TrackEntryBuilder`, and the builders that extend it, `TrackItemBuilder` and `TrackGroupBuilder`: a track's entry built step by step, an item entry's run with placeholders for its missing values, or a repeating sequence's run with the builders of the entries in it, with its values at a time |
 | `src/tracks/missing-values.ts` | `resolveMissingValues`, through the internal `MissingValuesResolver`: the values the missing starts and ends of builders laid over each other take |
-| `src/tracks/track-layering.ts` | `layer`: the builders that show once laid over each other, with their missing values, through the internal `layOver`, which leaves out the builders that one laid over them covers, and `resolveHolds`: which of builders that show hold before and after them |
-| `src/tracks/tracks.ts` | `TracksResolver`, its `TrackBuilder`s, which hold a track's entries (`TrackItemEntry`) in the groups of the sequences around them (`TrackGroupEntry`) and build them into its track runs, the `Tracks` it gives, and `Track`: the engine-agnostic tracks stage |
+| `src/tracks/track-layering.ts` | `layer`: the builders that show once laid over each other, with their missing values, through the internal `layOver`, which leaves out the builders that one laid over them covers, and `resolveHolds`: which of builders that show hold before and after them, the first one before them only with `firstHoldsBefore` |
+| `src/tracks/tracks.ts` | `TracksResolver`, its `TrackBuilder`s, which hold a track's entries (`TrackItemEntry`) in the groups of the sequences around them (`TrackGroupEntry`) and build them into its entries, the `Tracks` it gives, and `Track`: the engine-agnostic tracks stage |
 | `src/dom/mapping.ts` | What binds a timing to the DOM, for any DOM adapter: targets, value forms (`RawTweenStops`), mapping types, `AnimatorOptions`, resolving targets, and `ByElementAndProperty`, a value for each property of each element, with `mapByElementAndProperty` |
 | `src/waapi/animator.ts` | `animator`, and `WAAPIAnimator`, the `Animator` for WAAPI, which runs every step and creates the native animations |
 | `src/waapi/controls.ts` | `AnimationControls`: playing, pausing, seeking and listening to the native animations together |
 | `src/waapi/css-values.ts` | CSS property names, value types, and the value handling: `CSSValueResolver`, `domValueResolver`, `plainNumberResolver` and `alignNumbers` |
-| `src/waapi/tracks.ts` | `NativeEffectsResolver`: tracks into WAAPI effects, with their timing, and their values as CSS text (`TrackValueTexts`) |
+| `src/waapi/tracks.ts` | `NativeEffectsResolver`: tracks into WAAPI effects, with their timing, the holds WAAPI plays, and their values as CSS text (`TrackValueTexts`) |
+| `src/waapi/track-clips.ts` | `TrackClip`, `TrackRunPart`, `TrackRun` and `trackRunOf`: a track's entry as one run of clips, a repeating group flattened into one iteration, since WAAPI can't nest repeats |
 | `src/waapi/native-effects.ts` | The easing stage: clips into native keyframes and easings, each keyframe with the track's value there |
 | `src/waapi/native-easing.ts` | `NativeEasing` and its CSS form |
 | `src/waapi/spring-fit.ts` | Fitting a spring easing with cubic Bézier segments |
@@ -674,10 +675,11 @@ new WAAPIAnimator({scope}).animate(definition)    scope: document.documentElemen
 ├─ 1. Plan         plan(definition, targetsResolver)  → AnimationPlan | SequencePlan tree
 │                  (targets resolved §5.1, positions and delays §5.3; values stay as given §5.2)
 ├─ 2. Tracks       new TracksResolver(plan, naming).resolve()  → Tracks: a Track per target and property (§5.4)
-│                  (entries layered, or merged in repeating sequences; missing values from neighbours,
+│                  (entries layered, repeating sequences kept as groups; missing values from neighbours,
 │                   or described; repeats as runs; holds)
 ├─ 3. Effects      NativeEffectsResolver.resolve(tracks, domValueResolver)
-│     ├─ a. timing   → PlacedEffect[]    (runs as iterations or keyframes, fill modes §5.5)
+│     ├─ a. timing   → PlacedEffect[]    (each entry as one run of clips, groups flattened; runs as iterations
+│     │                                    or keyframes, fill modes §5.5)
 │     ├─ b. values   → TrackValueTexts per track  (given values checked, current values, interpolated values §5.6)
 │     └─ c. easings  → NativeAnimationEffect[]  (keyframes, native easings, values as text §5.7)
 │                  = AnimationTracks: ByElementAndProperty<NativeAnimationEffect[]>
@@ -685,7 +687,7 @@ new WAAPIAnimator({scope}).animate(definition)    scope: document.documentElemen
                    → AnimationControls
 ```
 
-The plan walks the definition tree, which holds every target and value, so nothing is looked up by path. Every animation leaf is still named by its **entry path**: the names leading to it joined by `>`, such as `intro>logo>fade`. Names can't contain `>`, so paths can't collide. The tracks stage builds the paths as it walks the plan, and names each track run by them (§5.4), which names the animations (§5.8).
+The plan walks the definition tree, which holds every target and value, so nothing is looked up by path. Every animation leaf is still named by its **entry path**: the names leading to it joined by `>`, such as `intro>logo>fade`. Names can't contain `>`, so paths can't collide. The tracks stage builds the paths as it walks the plan, and names each entry of a track by them (§5.4), which names the animations (§5.8).
 
 ### 5.1 Targets
 
@@ -699,7 +701,7 @@ A property's **value type** comes from `CSS.supports`, tested against `1`, `1px`
 - the **default unit** for a bare number: none when the property takes numbers, then `px`, then `deg`; otherwise a bare number throws;
 - the **probe syntax**, such as `<length-percentage>` or `<number> | <percentage>`.
 
-Nothing is resolved in place. A track run's values are `TrackValue`s (`src/tracks/track-values.ts`), each one a **given value**, as it is, or a **value token**, which stands for a value the values stage works out:
+Nothing is resolved in place. A track's values are `TrackValue`s (`src/tracks/track-values.ts`), each one a **given value**, as it is, or a **value token**, which stands for a value the values stage works out:
 - the **`CurrentValueToken`** (`currentValueToken`, `{type: 'currentValue'}`): the property's value when `animate` is called;
 - an **`InterpolationToken`** (`{type: 'interpolation', from, to, factor}`): the value `factor` of the way from `from` to `to`, which are track values too. A factor outside 0–1 runs past them, as a spring overshoots.
 
@@ -732,7 +734,7 @@ The anchor duration (§2.7.2) stays in the planners: only placing the entries af
 
 ### 5.4 Tracks
 
-`TracksResolver` (`src/tracks/tracks.ts`) lays every animation leaf out in time, per target and property. It knows nothing of the engine: tracks hold runs, which say what happens rather than how a definition asked for it, and the WAAPI side decides how to play them (§5.5).
+`TracksResolver` (`src/tracks/tracks.ts`) lays every animation leaf out in time, per target and property. It knows nothing of the engine: tracks hold entries, items and the groups of repeating sequences, whose runs say what happens rather than how a definition asked for it, and the WAAPI side decides how to play them, flattening each group, since it can't nest repeats (§5.5). The tracks stage flattens nothing.
 
 ```
 new TracksResolver(plan, naming).resolve()
@@ -740,14 +742,14 @@ new TracksResolver(plan, naming).resolve()
 │                       each leaf → a TrackItemEntry in the TrackBuilder of each of its targets × properties
 └─ 2. TrackBuilder.build(), per track
       ├─ a. Build         the entries' builders: an item entry's own, a group's that doesn't repeat in its place,
-      │                   a repeating group's merged into one; sorted, each merged builder's continuations right before it
+      │                   a repeating group's own, with its entries' builders in it; sorted, each group's continuations right before it
       └─ b. Layer         layer(builders): the ones that show, their missing values
-                          (resolveMissingValues); resolveHolds(showing); each → TrackRun
+                          (resolveMissingValues); resolveHolds(showing); each → TrackItem | TrackGroup
 → Tracks: ByElementAndProperty<Track>
 ```
 
 **1. Walk the plan.** Entries are added to their `TrackBuilder` in declaration order, which keeps them in that order. `TracksResolver` gives every `TrackBuilder` its `naming`.
-- **Runs.** The plan's `repeatOptions` become the tracks stage's own terms here, once (`trackEntryOf`), in a `TrackEntry` (`src/tracks/track-runs.ts`), the run every entry of a track has:
+- **Runs.** The plan's `repeatOptions` become the tracks stage's own terms here, once (`trackEntryOf`), in a `TrackEntry` (`src/tracks/track-entries.ts`), the run every entry of a track has:
   - `start`, after the outermost definition starts, and `duration`, one iteration;
   - `repeatCount`: the iterations after the first, `Infinity` forever;
   - `repeatDelay`: how long it holds its end value before each repeat, in seconds;
@@ -777,33 +779,29 @@ new TracksResolver(plan, naming).resolve()
 Once built, a track builder is closed: `startGroup`, `add`, `endGroup` and `build` throw.
 
 **2a. Build** (`TrackBuilder.build`). Turns the root entries into builders (`buildersOf`), in declaration order:
-- **An item entry** (an infinite one included): its iteration with its own repeats (`TrackRunBuilder.of`). WAAPI shows a later effect over an earlier one, and the earlier one again once it ends, so these never merge.
-- **A group that doesn't repeat:** its entries' builders, in its place.
-- **A repeating group** (`repeats`: its `repeatCount` is above 0): one merged builder, with its continuations (`mergedBuilderOf`, below).
+- **An item entry** (an infinite one included): a builder of its run with its own repeats (`TrackItemBuilder.of`). WAAPI shows a later effect over an earlier one, and the earlier one again once it ends, so items never join into one.
+- **A group that doesn't repeat:** its entries' builders, in its place. It only shifts them in time, so the track doesn't keep it.
+- **A repeating group** (`repeats`: its `repeatCount` is above 0): a builder of its own, with its continuations (`groupBuilderOf`, below).
 
-Then it sorts them by start (`byStart`), ties in declaration order (the sort is stable). This is the stacking order: a builder shows over the ones before it. A final pass puts each merged builder's continuations right before it, from a `ContinuationsByBuilder` map, so they're under it, and passes them all to `layer` in that order.
+Then it sorts them by start (`byStart`), ties in declaration order (the sort is stable). This is the stacking order: a builder shows over the ones before it. A final pass puts each repeating group's continuations right before it, from a `ContinuationsByBuilder` map, so they're under it, and passes them all to `layer` in that order.
 
-**A repeating group's builder** (`mergedBuilderOf`). One iteration of the sequence is one run merged from the iterations of the builders in it, each over the ones before it, since only one run can repeat them together.
-- **Builders:** its entries' builders (`buildersOf`), sorted by start. A repeating group in it is merged first, by recursion, then repeated by `TrackRunBuilder.merge`. So repeats are always a track run builder's job.
-- **Repeating forever:** a builder that repeats forever plays once in the iteration, through `withoutRepeats()`, a copy of it without repeats. A finitely repeating builder plays all its repeats in it.
-- **Merged** (below) with the group's run, its `entries` left out, and named from the paths of the item entries in it at any depth, by start (`itemEntriesIn`, `nameOf`).
-- **Continuations**, against the merged builder in the map: the outermost builders in it, at any depth, that repeat forever: each of its builders that does, and the continuations of each that ends, sorted by start. Nothing around them repeats forever, so they carry on under the merged builder once that ends. Each is the builder that repeats forever itself, so it's named after what it continues, and shares its values with the copy merged in: a missing value the merge gives the copy, it has too. A group that repeats forever itself has none, since it never ends.
+**A repeating group's builder** (`groupBuilderOf`). A repeat plays everything in the sequence again together, so the track keeps the sequence as a group: its run, and its entries as they play in its first iteration. A repeating group in it stays a group, with its own repeats.
+- **Builders:** its entries' builders (`buildersOf`), sorted by start. A repeating group in it gets its builder first, by recursion.
+- **Repeating forever:** a builder that repeats forever plays once in each iteration, through `withoutRepeats()`, a copy of it without repeats, which is only made for those (`builder.ends ? builder : builder.withoutRepeats()`). Every other builder keeps its repeats.
+- **Layering** (`layer`, 2b). The builders are laid over each other as a track's are, in the group's first iteration, so one that a later one covers is left out, and the ones that show take their missing values from each other by the same rules.
+    - A missing start that nothing ends by, or a missing end that nothing starts after, stays missing. That leaves the group's own start and end to the track it's laid on; any other builds into the current value.
+- **Holds** (`resolveHolds(showing, {firstHoldsBefore: false})`). The ones that show hold after as a track's do, and none of them holds before. An entry's hold after shows until what's next in the group does, across the repeat delay and into the next iteration too.
+- **Its builder** (`TrackGroupBuilder.of`): the group's run, its `entries` left out, with the builders that show, named from the paths of the item entries in it at any depth, by start (`itemEntriesIn`, `nameOf`).
+- **Continuations**, against the group's builder in the map: the outermost builders in it, at any depth, that repeat forever: each of its builders that does, and the continuations of each that ends, sorted by start. Nothing around them repeats forever, so they carry on under the group once that ends. Each is the builder that repeats forever itself, so it's named after what it continues, and shares its values with its copy in the group: a missing value the group's layering gives the copy, it has too. A group that repeats forever itself has none, since it never ends.
 - A group without item entries in it, at any depth, has no builder.
 
-**Merging.** The builder of the sequence's iteration, merged from the builders that show:
-1. **Layering** (`layer`, 2b). The builders are laid over each other as a track's are, so one that a later one covers is left out, and the ones that show take their missing values from each other by the same rules.
-    - A missing start that nothing ends by, or a missing end that nothing starts after, stays missing. That leaves the merged builder's own start and end to the track it's laid on; any other builds into the current value.
-2. **Iteration** (`TrackRunBuilder.merge`). Without builders, or when the sequence's iteration has no duration, it throws. Each one's iterations, one after another (`partOf`), are moved into the sequence's iteration as fractions of it (`moveClips`), and laid, after the first, against the clips so far:
-    - **Starts before they end** (a shared start included): it replaces their clips while it lasts (`overlayClips`). A clip it trims (`trimClips`, `TrackClip.trim`) keeps its easing and all its stops, and only its window narrows, so its values are the ones it had there.
-    - **Starts at or after their end:** it follows, with their end value held until then (`joinClips`).
-
-**2b. Layer** (`src/tracks/track-layering.ts`). `layer(builders)` lays builders over each other in the order they're given, each over the ones before it, and returns the ones that show, in that order. It never sorts and knows nothing of continuations, so any order works. A builder **runs at** a time from its start up to, but not at, its end (`TrackRunBuilder.runsAt`), and **covers** another when it starts with or before it and ends with or after it (`TrackRunBuilder.covers`).
+**2b. Layer** (`src/tracks/track-layering.ts`). `layer(builders)` lays builders over each other in the order they're given, each over the ones before it, and returns the ones that show, in that order. It never sorts and knows nothing of continuations, so any order works. A builder **runs at** a time from its start up to, but not at, its end (`TrackEntryBuilder.runsAt`), and **covers** another when it starts with or before it and ends with or after it (`TrackEntryBuilder.covers`).
 1. **Showing** (`builders.reduce(layOver, [])`). Each builder leaves out the ones under it that it covers. They never show, and nothing takes a value from them.
 2. **Missing values** (`resolveMissingValues`, below), among the ones that show.
 
 `TrackBuilder.build` then gives the ones that show their holds and builds them:
-1. **Holds** (`resolveHolds(builders)`). The topmost of the ones that start first holds before it starts; with none showing, none does. One that ends holds after it, when none under it runs at its end.
-2. **Track runs.** The ones that show build, in the order they're given.
+1. **Holds** (`resolveHolds(builders)`). The topmost of the ones that start first holds before it starts; with none showing, none does. With `firstHoldsBefore: false`, which a repeating group's builder passes for its entries, none does. One that ends holds after it, when none under it runs at its end.
+2. **Entries.** The ones that show build, in the order they're given, each into a `TrackItem` or a `TrackGroup` (below).
 
 **Missing values** (`resolveMissingValues(builders)`, `src/tracks/missing-values.ts`). It runs the module's internal `MissingValuesResolver`, `new MissingValuesResolver(builders).resolve()`, which gives the missing starts and ends of builders laid over each other, all of which show, the values they take.
 
@@ -815,61 +813,86 @@ So each waiting value's neighbor is the closest of all the others. `resolve()` t
 1. **Neighbors' values** (`assignNeighborValues`). Each start takes its neighbor's end value, and each end its neighbor's start (`valueAt(neighbor.start)`).
 2. **Current values** (`assignCurrentValues`). A start and an end that wait for each other both take the current value: the second of the two assignments is refused, since its value depends on the placeholder (`dependsOn`), so both are still missing, and each one still missing takes the `CurrentValueToken`.
 
-A missing value without a neighbor stays missing: its builder builds it into the current value, unless it's a merged run's own start or end, which the track the merged builder is laid on gives a value.
+A missing value without a neighbor stays missing: its builder builds it into the current value, unless it's a repeating group's own start or end, which the track the group is laid on gives a value.
 
 Continuations of what repeats forever never end, so they take no end and never hold after, like any builder that repeats forever.
 
-**Run builders** (`TrackRunBuilder`, `src/tracks/track-run-builder.ts`). Each has a name, a `TrackEntry`, and the clips of its iteration, their offsets fractions of it, as `PendingValue`s: an entry's iteration, or a repeating sequence's merged iteration. It lays out its iterations through `partOf` (below), and builds the one `TrackRun`.
+**Entry builders** (`src/tracks/track-entry-builder.ts`). Layering, missing values and holds work with a `TrackEntryBuilder`, which two builders extend:
+- **`TrackItemBuilder`:** an item entry's run through its stops, by its easing, its values `PendingValue`s. `TrackItemBuilder.of(name, timing, easing, stops)` makes one from its `TweenStops`, each missing value (`null`) a placeholder of its own.
+- **`TrackGroupBuilder`:** a repeating sequence's run, with the builders of the entries in it as they play in its first iteration, laid over each other, all of which show, with their holds. `TrackGroupBuilder.of(name, timing, entries)` throws without entries, or when one of them never ends.
+
+Each has a name and a `TrackEntry`, and builds one entry of the track.
 
 | Part | What it does |
 |---|---|
-| Placeholders | Each missing value is a `Placeholder`, the same object in every clip that has it (holds, trimming, flipped stops, repeats), so assigning it sets it everywhere. `PendingValue` is a value that may hold one. `missingValueOf` follows one placeholder to the missing value it comes to. A value that depends on the placeholder itself (`dependsOn`) is refused, and the placeholder stays missing |
-| `of(name, timing, easing, stops)` | An entry's builder: its iteration, one clip from 0 to 1 through its `TweenStops`, with the whole of its easing, each missing value (`null`) a placeholder of its own |
-| `merge(name, timing, children)` | A repeating sequence's builder: its children's iterations merged into its iteration (see merging, above), as fractions of it, repeated with the sequence's timing. Without children, or when `timing` has no duration, it throws |
-| `start`, `end`, `ends` | When its first iteration starts and its last one ends, and whether it ends. `end` is `Infinity` when it repeats forever |
+| Placeholders | Each missing value is a `Placeholder`, the same object wherever it's used (an item's stops, a group's entries, a copy without repeats), so assigning it sets it everywhere. `PendingValue` is a value that may hold one. `missingValueOf` follows one placeholder to the missing value it comes to. A value that depends on the placeholder itself (`dependsOn`) is refused, and the placeholder stays missing |
+| `start`, `end`, `ends` | When it starts and its last iteration ends, and whether it ends. `end` is `Infinity` when it repeats forever. A group starts where its first entry does, and ends where its entries end in its last iteration, mirrored when that iteration flips |
 | `runsAt(time)`, `covers(other)` | Whether it runs at `time`, from its start up to, but not at, its end, and whether it starts with or before `other` and ends with or after it |
-| `valueAt(time)` | Its iteration's value then, held through the repeat delay after each iteration, and its start or end value outside its iterations: the next clip's start where two meet. Its end value is its last iteration's, so after an odd number of flips, it's the start's |
-| `startValue`, `endValue` | The value its first iteration starts on, and the value its last iteration ends on |
+| `valueAt(time, {flipsValues})` | Its iteration's value then, held through the repeat delay after each iteration, and its start or end value outside its iterations (below). With `flipsValues`, the value it shows at the time that mirrors `time` in an iteration around it that flips its values |
+| `startValue`, `endValue` | The value its first iteration starts on, which it shows before it starts (`valueAt(-Infinity)`), and the value its last iteration ends on (`valueAt(Infinity)`): after an odd number of flips, the start's |
 | `hasMissingStartValue`, `hasMissingEndValue` | Whether the value is missing. One that never ends has no end to miss |
-| `assignStartValueIfMissing(value)`, `assignEndValueIfMissing(value)` | A missing start or end takes `value`: another builder's value at a time, which is a stop's value or an `InterpolationToken`, another's end value, or the `CurrentValueToken`. They do nothing when the value isn't missing, or `value` depends on it |
-| `withoutRepeats()` | Itself when it ends; otherwise a builder of its first iteration only, without repeats, with the same clips, so a value assigned to one is the other's too |
-| `holdBefore()`, `holdAfter()` | Makes it hold its start value before it, or its end value after it |
-| `build()` | The track run: its name, its timing, its clips with each placeholder as its value, or the `CurrentValueToken` without one, each interpolated value resolved once (`TrackClip.map`), and its holds |
+| `assignStartValueIfMissing(value)`, `assignEndValueIfMissing(value)` | A missing start or end takes `value`: another builder's value at a time, which is a stop's value or an `InterpolationToken`, another's end value, or the `CurrentValueToken`. They do nothing when the value isn't missing, or `value` depends on it. A group's start or end is the one of the entry that gives it |
+| `withoutRepeats()` | A builder of its first iteration only, without repeats or oscillation, with the same values, so a value assigned to one is the other's too |
+| `holdsBefore`, `holdsAfter`, `holdBefore()`, `holdAfter()` | Whether it holds its start value before it, or its end value after it, and making it |
+| `build()` | Its entry of the track, a `TrackItem` or a `TrackGroup` (below), with each placeholder as its value, or the `CurrentValueToken` without one, each interpolated value resolved once per item, and its holds |
 
-`endValue`, `assignEndValueIfMissing` and `merge`, for each child, need an end: on a builder that repeats forever, they throw, saying to check `ends` first.
+**Values at a time.** Every flip mirrors time, and a values flip also turns each animation's values around:
+- **An item**, at a fraction `x` of an iteration that flips nothing, shows its stops at its easing's progress `p(x)`: its start progress before the iteration, and its end progress after it. A flipped iteration reads the mirrored fraction, `1 − x`. A values flip, its own or one around it (`flipsValues`), reads `1 − p(1 − x)` instead, so its values run from end to start while its easing runs forwards. Two values flips cancel out.
+- **A group** finds the iteration and the time in it, mirrored when the iteration flips, and shows what its entries show then in its first iteration (`entryShowingAt`):
+    1. the topmost one running then;
+    2. otherwise, the end value of the latest to end by then of the ones that hold after, the topmost of ties (`entryHeldAt`);
+    3. otherwise, before them, the start value of the topmost of the ones that start first (`firstEntry`).
 
-**Track runs** (`src/tracks/track-runs.ts`). A `Track` (`src/tracks/tracks.ts`) is its runs in stacking order. Next to `TrackEntry`, `repeats(timing)` and `repeatsForever(timing)` say whether a run repeats, and whether it repeats forever; `TrackRunBuilder` and `TrackBuilder` use them.
+  From where its entries end in an iteration, it shows the value that iteration ends on: what its entries show once they're all done, or, in a flipped iteration, before any of them starts (`iterationEndValueAt`). It holds it through the repeat delay, until they start in the next iteration.
 
-| Part | What it is |
+`endValue`, `assignEndValueIfMissing`, and `TrackGroupBuilder.of`, for each entry, need an end: on a builder that repeats forever, they throw, saying to check `ends` first or to give the group that entry without its repeats.
+
+**The track's entries** (`src/tracks/track-entries.ts`). A `Track` (`src/tracks/tracks.ts`) is its entries in stacking order, each a `TrackItem` or a `TrackGroup`. Next to `TrackEntry`, `repeats(timing)` and `repeatsForever(timing)` say whether a run repeats, and whether it repeats forever; `TrackEntryBuilder` and `TrackBuilder` use them.
+
+A `TrackStop` is a value at an offset of an easing's progress. `valueAtProgress(stops, progress)` reads stops: a stop's own value at a stop, and otherwise an `InterpolationToken` (`valueBetween`, which gives an end itself at a factor of 0 or 1, or when both ends are the same): linear between two stops, continuing the nearest two past the outer ones. Stops sit at their progress, so where the easing reaches one in time depends on the easing.
+
+| Field | Meaning |
 |---|---|
-| `TrackStop` | A value at an offset of a clip's easing's progress |
-| `TrackClip` | `stops` played through an `easing`, over a window of its input time, `windowStart` to `windowEnd` (backwards when the end comes first), and placed from `startOffset` to `endOffset`, fractions of the time it's placed in: its run's iteration, or a part. One easing runs through all its stops: linear between two stops, continuing the nearest two past the outer ones. Stops sit at their progress, so where the easing reaches one in time depends on the easing. A run whose stops need different easings has a clip for each |
-| `windowedEasing` | Its easing over its window (`Easing.segment`), which keeps the easing's progress: the value at a fraction `x` of the clip is `valueAtProgress(windowedEasing.progressAt(x))` |
-| `valueAt(offset)` | At an offset of the time it's placed in: its start value before it, its end value after it, and where it starts and ends at once (`isJump`) |
-| `valueAtProgress(progress)` | A stop's own value at a stop, and otherwise an `InterpolationToken` (`valueBetween`, which gives an end itself at a factor of 0 or 1, or when both ends are the same). A builder's clips hold `TweenStops` values as given, and a run's `TrackValue`s (§5.2) |
-| `startValue`, `endValue` | At the progress its window starts from and ends at |
-| `trim(start, end)` | What of it plays from `start` to `end`, with its window narrowed to that; its easing and stops stay. A jump stays when it's from `start` up to, but not at, `end` |
-| `flip(oscillate)` | The same clip in the flipped iteration, from 1 minus its end to 1 minus its start. Flipping its `'time'` runs its window backwards; flipping its `'values'` reverses its stops, each one moved from its offset to 1 minus it |
-| `stopsBetween(from, to)`, `move(startOffset, endOffset)`, `map(transform)` | The stops strictly between two progresses, the clip moved elsewhere, and the clip with each value transformed |
-| Hold | A clip with the same value at 0 and 1 and a linear easing |
-| `TrackRunPart` | A stretch of a track: its `start`, after the outermost definition starts, its `duration`, and its `clips`, one after another without gaps, their offsets fractions of it |
-| `partOf(timing, clips, first, last, {holdsUntilNext})` | A run's iterations from `first` to `last`, one after another, each one's end value held until the next starts (`joinClips`), as a part from where its first clip starts to where its last one ends, 0 to 1. With `holdsUntilNext`, the last one's is held too, until the iteration after it would start. Every other iteration of an oscillation is laid out back to front, each clip flipped (`TrackClip.flip`). A part without duration keeps its clips' offsets in their iteration. It throws without clips, and for iterations the run doesn't have |
-| `moveClips(part, start, duration)` | The part's clips moved into another stretch of the track, as fractions of it, each offset worked out from its time, so a part's first clip starts at exactly 0 and its last ends at exactly 1 |
-| `TrackRun` | What the tracks stage gives: fields below, and `part(first, last, {holdsUntilNext})`, its iterations through `partOf`. Without clips, it throws |
-
-| `TrackRun` field | Meaning |
-|---|---|
-| `name` | From the `Naming`: the entry path of a run from one leaf, or the paths of a merged run's leaves joined with `+`, such as `intro>title+intro>subtitle`. A continuation is named after what it continues. An animation on its own has none |
-| `timing.start` | When it starts, from the outermost definition's start: a merged run's is its sequence's |
-| `timing.duration` | One iteration of a layered run or a continuation, or one iteration of a merged run's sequence |
-| `timing.repeatCount`, `timing.repeatDelay`, `timing.oscillate` | How it repeats after its first iteration |
-| `clips` | Its iteration, as `TrackValue`s, one after another without gaps, their offsets fractions of it |
+| `type` | `'item'` or `'group'` |
+| `name` | From the `Naming`: an item's entry path, or the paths of a group's leaves joined with `+`, such as `intro>title+intro>subtitle`. A continuation is named after what it continues. An animation on its own has none |
+| `start`, `duration`, `repeatCount`, `repeatDelay`, `oscillate` | Its run (`TrackEntry`). A group's are its sequence's |
+| `easing`, `stops` | An item's: its easing, and its stops as `TrackValue`s |
+| `entries` | A group's: its entries as they play in its first iteration, in stacking order, none of them holding before. Each of its iterations plays them, and every other one of an oscillation flips them |
 | `holdsBefore` | Whether it holds its start value before it starts |
-| `holdsAfter` | Whether it holds its end value once it's done, after its last repeat |
+| `holdsAfter` | Whether it holds its end value once it's done, after its last repeat; in a group, until what's next in it shows |
 
 ### 5.5 Effects, stage a: timing
 
-`NativeEffectsResolver.resolve(tracks, valueResolver)` (`src/waapi/tracks.ts`) turns each track run into WAAPI effects. `nativeTimingOf` turns it into WAAPI timing: natively repeated where WAAPI can, laid out in the keyframes where it can't. Each effect plays a part from `TrackRun.part`, delayed by where it starts, its clips' offsets fractions of the effect's iteration (`timingOf`).
+`NativeEffectsResolver.resolve(tracks, valueResolver)` (`src/waapi/tracks.ts`) turns each entry of a track into one run of clips (`trackRunOf`, below), and each run into WAAPI effects. `nativeTimingOf` turns it into WAAPI timing: natively repeated where WAAPI can, laid out in the keyframes where it can't. Each effect plays a part from `TrackRun.part`, delayed by where it starts, its clips' offsets fractions of the effect's iteration (`timingOf`).
+
+**Runs of clips** (`trackRunOf`, `src/waapi/track-clips.ts`). WAAPI can't nest repeats, so each entry becomes one `TrackRun`, whose iteration is its clips:
+- **An item:** one clip from 0 to 1 through its stops, with the whole of its easing.
+- **A group** (`groupClipsOf`), flattened:
+    1. Each entry's iterations, one after another (`layOutIterations`, through `partOf`), a group in it flattened first, by recursion.
+    2. In the group's iteration, at the same moments, as fractions of it (`clipsIn`).
+    3. Laid, after the first, against the clips so far, in stacking order:
+        - **Starts before they end** (a shared start included): it replaces their clips while it lasts (`overlayClips`). A clip it trims (`trimClips`, `TrackClip.trim`) keeps its easing and all its stops, and only its window narrows, so its values are the ones it had there.
+        - **Starts at or after their end:** it follows, with their end value held until then (`joinClips`), as the holds the tracks stage gives its entries say.
+
+  It throws without entries, when the group's iteration has no duration, for an entry that holds before, and for one that repeats forever.
+
+**Holds it plays.** A run's hold before would show over every run under it that starts earlier, and playing it only once those end would take joining them into one. So it throws for a run that holds before and starts after another (`requireOnlyFirstHoldsBefore`), and for an entry of a group that holds before. The tracks stage gives neither.
+
+| Part | What it is |
+|---|---|
+| `TrackClip` | `stops` played through an `easing`, over a window of its input time, `windowStart` to `windowEnd` (backwards when the end comes first), and placed from `startOffset` to `endOffset`, fractions of the time it's placed in: its run's iteration, or a part |
+| `windowedEasing` | Its easing over its window (`Easing.segment`), which keeps the easing's progress: the value at a fraction `x` of the clip is `valueAtProgress(windowedEasing.progressAt(x))` |
+| `valueAt(offset)` | At an offset of the time it's placed in: its start value before it, its end value after it, and where it starts and ends at once (`isJump`) |
+| `valueAtProgress(progress)` | Its stops' value at a progress (`valueAtProgress`, §5.4) |
+| `startValue`, `endValue` | At the progress its window starts from and ends at |
+| `trim(start, end)` | What of it plays from `start` to `end`, with its window narrowed to that; its easing and stops stay. A jump stays when it's from `start` up to, but not at, `end` |
+| `flip(oscillate)` | The same clip in the flipped iteration, from 1 minus its end to 1 minus its start. Flipping its `'time'` runs its window backwards. Flipping its `'values'` mirrors its window too, so its easing still runs forwards, and reverses its stops, each one moved from its offset to 1 minus it: an item's `1 − p(1 − x)` (§5.4), however it's trimmed |
+| `stopsBetween(from, to)`, `move(startOffset, endOffset)` | The stops strictly between two progresses, and the clip moved elsewhere |
+| Hold | A clip with the same value at 0 and 1 and a linear easing |
+| `TrackRunPart` | A stretch of a track: its `start`, after the outermost definition starts, its `duration`, and its `clips`, one after another without gaps, their offsets fractions of it |
+| `partOf(timing, clips, first, last, {holdsUntilNext})` | A run's iterations from `first` to `last`, one after another, each one's end value held until the next starts (`joinClips`), as a part from where its first clip starts to where its last one ends, 0 to 1. With `holdsUntilNext`, the last one's is held too, until the iteration after it would start. Every other iteration of an oscillation is laid out back to front, each clip flipped (`TrackClip.flip`). A part without duration keeps its clips' offsets in their iteration. It throws without clips, and for iterations the run doesn't have |
+| `clipsIn(laidOut, time)` | Laid-out clips in another stretch of the track, at the same moments, as fractions of it, each offset worked out from its time, so a part's first clip starts at exactly 0 and its last ends at exactly 1 |
+| `TrackRun` | Its `name`, its `timing` (the entry's run), its `clips`, one iteration of it, `holdsBefore` and `holdsAfter`, and `part(first, last, {holdsUntilNext})`, its iterations through `partOf`. Without clips, it throws |
 
 **Native layout.** For a run whose iteration's clips go from `a` to `b`, in iterations of `L` with a repeat delay `d`, the period is `P = L + d`:
 
@@ -902,7 +925,7 @@ Values become keyframe text through a `CSSValueResolver` (`src/waapi/css-values.
 On the page, that's `domValueResolver`, which uses computed styles, `CSS.supports` and probes. Tools that animate no real property use `plainNumberResolver`.
 
 For each track, a `TrackValueTexts` (`src/waapi/tracks.ts`) gives each track value its CSS text, once:
-1. **Given values** take their text through `textOf`, and are checked with `validate`. Every given value of every run is checked up front, the ends of interpolated values included, whether a keyframe shows it or not.
+1. **Given values** take their text through `textOf`, and are checked with `validate`. Every given value of every entry, a group's entries included, is checked up front, the ends of interpolated values included, whether a keyframe shows it or not.
 2. **The `CurrentValueToken`** is the property's current computed value.
 3. **An interpolated value** takes its ends' texts, as numbers in one unit from `alignedNumbersOf` (`alignNumbers`), and is the number `factor` of the way between them, in that unit.
     - Ends that are both numbers in one unit are taken as they are.
@@ -938,7 +961,7 @@ For each target, property and effect, in order, the adapter calls `element.anima
 - keyframe values are their CSS text;
 - times are converted to milliseconds;
 - `float` and `offset` become `cssFloat` and `cssOffset`, since `offset` is the keyframe's own;
-- the animation's `id` is its track run's name and the property, `name:property`, or the property alone for an animation on its own (§3.7).
+- the animation's `id` is its track entry's name and the property, `name:property`, or the property alone for an animation on its own (§3.7).
 
 `animate` returns an `AnimationControls` over the native `Animation`s. It plays, pauses, cancels, finishes and seeks all of them together, and sets their playback rate and start time, in seconds. `finished` settles once they all have. `onFinish` and `onCancel` call a listener each time every animation has dispatched that event, and return a function that removes it.
 
@@ -964,7 +987,8 @@ For each target, property and effect, in order, the adapter calls `element.anima
 | Tracks are engine-agnostic | They describe repeats as what happens, not how a definition asked for it: runs with a repeat count, a repeat delay and what an oscillation flips, and holds before and after, whatever renders them. The WAAPI side decides what it repeats natively and what it lays out in keyframes |
 | Constructors validate and clamp | Every way of making a definition is checked, not only the factories |
 | Tracks per target and property | WAAPI stacks effects per property, and units differ between entries |
-| Overlapping entries layer, stacked by start, and only a repeating sequence's entries merge | WAAPI already shows the earlier effect again, from where it is, once the later one ends. A repeat plays everything in it again together, which only one run can |
+| Overlapping entries layer, stacked by start, and only a repeating sequence's entries stay together, as a group | WAAPI already shows the earlier effect again, from where it is, once the later one ends. A repeat plays everything in it again together, which only one effect can, so the WAAPI side flattens a group into one run |
+| The tracks stage keeps repeating sequences as groups, and flattens nothing | Flattening only serves an engine that can't nest repeats; an engine that can plays the groups as they are |
 | Entries take missing values from the ones under them and around them, and find what never shows and what holds, as each one is added to the layering, through placeholders set in place | The layering takes builders in any order, so the stacking order is decided outside it, and every clip that has a placeholder gets its value at once |
 | A missing end with nothing under it takes the start of the next run that starts after it | That's what shows next |
 | Keyframe easings lead to the next keyframe | It's WAAPI's own model |
@@ -981,7 +1005,7 @@ For each target, property and effect, in order, the adapter calls `element.anima
 
 It compares the result with the definitions' own math, sampled at times that miss round numbers, where steps and repeats jump. The definitions' math is: each iteration through the stops and easing, holds through repeat delays, `reverse` as time reversal, and `mirror` as `1 − progress` with the easing running forwards. Its interpolation of stops is `NumericStops` (`tests/numeric-stops.ts`), kept apart from the library's own.
 
-The cases cover single animations through every repeat, entries in sequences, and entries in repeating sequences, through plans whose sequences tests give `repeatOptions` (`withRepeats`). Easings are cubic Bézier (including overshoot), jump-start and jump-end steps, and springs. Plan, timing, fill, layering and missing-value cases are checked exactly. A builder holding after it ends when the one under its end never shows is checked on `layer` directly, since no definition lays builders in that order.
+The cases cover single animations through every repeat, entries in sequences, and entries in repeating sequences, through plans whose sequences tests give `repeatOptions` (`withRepeats`). Easings are cubic Bézier (including overshoot), jump-start and jump-end steps, and springs. Plan, timing, fill, layering and missing-value cases are checked exactly. A builder holding after it ends when the one under its end never shows is checked on `layer` directly, since no definition lays builders in that order. The tracks themselves are checked on `TracksResolver` directly: groups kept with their own repeats, sequences that don't repeat laid out on the track around them, continuations, and the holds and missing values of a group's entries. The holds WAAPI can't play are checked on hand-made tracks, since the tracks stage never gives them.
 
 `tests/animation.test.ts` covers timings: validation and clamping, telling transition kinds apart, splitting `AnimationTimingOptions`, the `DampedSpring` factories, and staggers. `tests/sequence.test.ts` covers positions (parsing, one offset of each kind in order, and resolving every reference and share), sequence timings, targets, tween stops (their forms, their checks and their ends), and definitions: values checked as they're made, naming, immutability, their entries, and private constructors.
 

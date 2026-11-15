@@ -17,9 +17,10 @@ import type {NativeAnimationEffect, NativeKeyframe} from "../src/waapi/native-ef
 import {cssEasingOf, type NativeEasing} from "../src/waapi/native-easing.ts";
 import {alignNumbers, type CSSValueResolver} from "../src/waapi/css-values.ts";
 import {naming, type EntryPath} from "../src/naming.ts";
-import {TrackRunBuilder} from "../src/tracks/track-run-builder.ts";
+import {TrackItemBuilder} from "../src/tracks/track-entry-builder.ts";
 import {layer, resolveHolds} from "../src/tracks/track-layering.ts";
-import {TracksResolver} from "../src/tracks/tracks.ts";
+import {type Track, type Tracks, TracksResolver} from "../src/tracks/tracks.ts";
+import type {TrackGroup, TrackItem} from "../src/tracks/track-entries.ts";
 import {TweenStops} from "../src/tween-stops.ts";
 import {type AnimationTracks, NativeEffectsResolver} from "../src/waapi/tracks.ts";
 
@@ -695,11 +696,134 @@ describe("NativeEffectsResolver repeating sequences", () => {
         expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 'x', iterations: 1}, {name: 's>a', iterations: 2}]);
         expect(sample(effects, [0.5, 1.25, 1.75, 2.5])).toEqual(closeTo([[10.5, 0.5, 0.5, 12.5]])[0]);
     });
+
+    it("starts an entry over a repeating sequence, before the sequence's entries start again, from the value its last iteration ended on", () => {
+        const s = SequenceTiming.builder().add(AnimationTiming.of({duration: 1}), 'a', 1).build();
+        const sequence = SequenceTiming.builder()
+            .add(s, 's', 0)
+            .add(AnimationTiming.of({duration: 1}), 'n', 2.5)
+            .build();
+        const effects = effectsOf(sequence, {s: {repeat: 1}}, {'s>a': line, n: {x: {1: 5}}});
+        expect(keyframesOf(effects.at(-1)!)).toEqual([[0, 1], [1, 5]]);
+    });
+
+    it("starts an entry over a repeating sequence, where a reversed iteration ends, from the start of the sequence's first entry, even one without duration", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 0}), 'j', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 0.5)
+            .build();
+        const sequence = SequenceTiming.builder()
+            .add(s, 's', 0)
+            .add(AnimationTiming.of({duration: 1}), 'n', 4)
+            .build();
+        const effects = effectsOf(sequence, {s: {repeat: 2, repeatDelay: 1, repeatMode: 'reverse'}}, {'s>j': {x: {0: 2, 1: 3}}, 's>b': line, n: {x: {1: 5}}});
+        expect(keyframesOf(effects.at(-1)!)).toEqual([[0, 2], [1, 5]]);
+    });
+});
+
+describe("TracksResolver", () => {
+    type EntryShape = Pick<TrackItem, 'type' | 'name' | 'start' | 'repeatCount' | 'holdsBefore' | 'holdsAfter'> & { entries?: EntryShape[] };
+    const shapeOf = (entry: TrackItem | TrackGroup): EntryShape => {
+        const {type, name, start, repeatCount, holdsBefore, holdsAfter} = entry;
+        return {type, name, start, repeatCount, holdsBefore, holdsAfter, ...(entry.type === 'group' && {entries: entry.entries.map(shapeOf)})};
+    };
+    const trackOf = (timing: SequenceTiming, repeatsByPath: { [path: EntryPath]: RepeatOptions }, valuesByPath: { [path: EntryPath]: AnimationValues }): Track =>
+        new TracksResolver(withRepeats(sequencePlanOf(timing, valuesByPath), repeatsByPath), naming).resolve().get(element)!.x!;
+
+    it("keeps a repeating sequence as a group of its entries, a repeating sequence in it as a group too, each with its own repeats", () => {
+        const t = SequenceTiming.builder().add(AnimationTiming.of({duration: 1}), 'a').build();
+        const s = SequenceTiming.builder()
+            .add(t, 't', 0)
+            .add(AnimationTiming.of({duration: 0.5}), 'b', 2.5)
+            .build();
+        const track = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}, 's>t': {repeat: 1, repeatMode: 'mirror'}}, {'s>t>a': line, 's>b': line});
+        expect(track.map(shapeOf)).toEqual([{
+            type: 'group', name: 's>t>a+s>b', start: 0, repeatCount: 1, holdsBefore: true, holdsAfter: true, entries: [
+                {
+                    type: 'group', name: 's>t>a', start: 0, repeatCount: 1, holdsBefore: false, holdsAfter: true, entries: [
+                        {type: 'item', name: 's>t>a', start: 0, repeatCount: 0, holdsBefore: false, holdsAfter: true}
+                    ]
+                },
+                {type: 'item', name: 's>b', start: 2.5, repeatCount: 0, holdsBefore: false, holdsAfter: true}
+            ]
+        }]);
+    });
+
+    it("lays the entries of a sequence that doesn't repeat out on the track around it", () => {
+        const u = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1)
+            .build();
+        const track = trackOf(SequenceTiming.builder().add(u, 'u').build(), {}, {'u>a': line, 'u>b': line});
+        expect(track.map(shapeOf)).toEqual([
+            {type: 'item', name: 'u>a', start: 0, repeatCount: 0, holdsBefore: true, holdsAfter: true},
+            {type: 'item', name: 'u>b', start: 1, repeatCount: 0, holdsBefore: false, holdsAfter: true}
+        ]);
+    });
+
+    it("plays an entry that repeats forever once in a repeating group, and puts what goes on with it right under the group", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1)
+            .build();
+        const track = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': line});
+        expect(track.map(shapeOf)).toEqual([
+            {type: 'item', name: 's>a', start: 0, repeatCount: Infinity, holdsBefore: false, holdsAfter: false},
+            {
+                type: 'group', name: 's>a+s>b', start: 0, repeatCount: 1, holdsBefore: true, holdsAfter: false, entries: [
+                    {type: 'item', name: 's>a', start: 0, repeatCount: 0, holdsBefore: false, holdsAfter: true},
+                    {type: 'item', name: 's>b', start: 1, repeatCount: 0, holdsBefore: false, holdsAfter: true}
+                ]
+            }
+        ]);
+    });
+
+    it("holds an entry of a group after it ends only when none under it runs there", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a', 0)
+            .add(AnimationTiming.of({duration: 0.5}), 'b', 0.5)
+            .build();
+        const [group] = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': line});
+        expect((group as TrackGroup).entries.map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
+            {name: 's>a', holdsAfter: true},
+            {name: 's>b', holdsAfter: false}
+        ]);
+    });
+
+    it("gives an entry of a group the values it's missing from the entries around it in the group", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
+            .build();
+        const [group] = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {0: 5, 1: 6}}});
+        expect(((group as TrackGroup).entries[0] as TrackItem).stops).toEqual([{offset: 0, value: 0}, {offset: 1, value: 5}]);
+    });
+});
+
+describe("NativeEffectsResolver holds", () => {
+    const itemOf = (name: string, start: Seconds, holdsBefore: boolean): TrackItem => ({
+        type: 'item', name, start, duration: 1, repeatCount: 0, repeatDelay: 0, easing: linear,
+        stops: [{offset: 0, value: 0}, {offset: 1, value: 1}], holdsBefore, holdsAfter: true
+    });
+    const resolve = (track: Track) => NativeEffectsResolver.resolve(new Map([[element, {x: track}]]) satisfies Tracks, numericResolver);
+
+    it("holds every run before that starts with the first", () => {
+        expect(resolve([itemOf('a', 0, true), itemOf('b', 0, true)]).get(element)!.x!.map(({fill}) => fill)).toEqual(['both', 'both']);
+    });
+
+    it("throws for a run that holds before and starts after another", () => {
+        expect(() => resolve([itemOf('a', 0, true), itemOf('b', 1, true)])).toThrow("Hold only the first run before.");
+    });
+
+    it("throws for an entry of a repeating sequence that holds before", () => {
+        const group: TrackGroup = {type: 'group', name: 's', start: 0, duration: 1, repeatCount: 1, repeatDelay: 0, entries: [itemOf('a', 0, true)], holdsBefore: true, holdsAfter: true};
+        expect(() => resolve([group])).toThrow("Hold none of a repeating sequence's entries before.");
+    });
 });
 
 describe("layer and resolveHolds", () => {
     const builderOf = (name: string, start: Seconds, duration: Seconds) =>
-        TrackRunBuilder.of(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
+        TrackItemBuilder.of(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
 
     it("holds a run after it ends when the one under its end never shows", () => {
         const showing = layer([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);

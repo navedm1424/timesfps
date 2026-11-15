@@ -1,11 +1,12 @@
 import {type ByElementAndProperty, mapByElementAndProperty} from "../dom/mapping.ts";
-import type {TrackClip, TrackRun, TrackRunPart} from "../tracks/track-runs.ts";
+import type {TrackGroup, TrackItem} from "../tracks/track-entries.ts";
 import type {Tracks} from "../tracks/tracks.ts";
 import type {TrackValue} from "../tracks/track-values.ts";
 import type {Seconds} from "../types.ts";
 import {lerp} from "../utils/math.ts";
 import type {CSSValueResolver} from "./css-values.ts";
 import {type NativeAnimationEffect, nativeEffectOf} from "./native-effects.ts";
+import {type TrackClip, type TrackRun, type TrackRunPart, trackRunOf} from "./track-clips.ts";
 
 /** Each element's properties, each with its effects in the order they show over each other in. */
 export type AnimationTracks = ByElementAndProperty<NativeAnimationEffect[]>;
@@ -25,15 +26,17 @@ type EffectTiming = Pick<PlacedEffect, 'delay' | 'duration' | 'iterations' | 'di
 
 /**
  * Turns tracks into WAAPI effects, in their tracks' order.
- * Each run's repeats become iterations, or keyframes where WAAPI can't repeat them.
+ * Each entry becomes one run of clips (`trackRunOf`), whose repeats become iterations, or keyframes where WAAPI can't repeat them.
  * Its values become CSS text, every given one checked, and then its easings become native ones.
  */
 export class NativeEffectsResolver {
     static resolve(tracks: Tracks, valueResolver: CSSValueResolver): AnimationTracks {
         return mapByElementAndProperty(tracks, (track, element, property) => {
             const texts = new TrackValueTexts(valueResolver, element, property);
-            for (const run of track) texts.checkGivenValuesOf(run);
-            return track.flatMap(run => nativeTimingOf(run).map(effect => nativeEffectOf(effect, run.name, texts.textOf)));
+            for (const entry of track) texts.checkGivenValuesOf(entry);
+            const runs = track.map(trackRunOf);
+            requireOnlyFirstHoldsBefore(runs);
+            return runs.flatMap(run => nativeTimingOf(run).map(effect => nativeEffectOf(effect, run.name, texts.textOf)));
         });
     }
 }
@@ -53,12 +56,14 @@ class TrackValueTexts {
         return text;
     };
 
-    /** Throws for a given value of the run that the property doesn't take, whether a keyframe shows it or not. */
-    checkGivenValuesOf(run: TrackRun<TrackValue>): void {
-        for (const {stops} of run.clips) {
-            for (const {value} of stops) {
-                for (const givenValue of givenValuesOf(value)) this.textOf(givenValue);
-            }
+    /** Throws for a given value of the entry, or of the entries in it, that the property doesn't take, whether a keyframe shows it or not. */
+    checkGivenValuesOf(entry: TrackItem | TrackGroup): void {
+        if (entry.type === 'group') {
+            for (const inner of entry.entries) this.checkGivenValuesOf(inner);
+            return;
+        }
+        for (const {value} of entry.stops) {
+            for (const givenValue of givenValuesOf(value)) this.textOf(givenValue);
         }
     }
 
@@ -82,6 +87,18 @@ class TrackValueTexts {
 function givenValuesOf(value: TrackValue): TrackValue[] {
     if (typeof value !== 'object') return [value];
     return value.type === 'interpolation' ? [...givenValuesOf(value.from), ...givenValuesOf(value.to)] : [];
+}
+
+/** Throws for a run that holds before while another starts before it: WAAPI would hold it over that one. */
+function requireOnlyFirstHoldsBefore(runs: readonly TrackRun<TrackValue>[]): void {
+    const firstStart = Math.min(...runs.map(startOf));
+    if (runs.some(run => run.holdsBefore && startOf(run) > firstStart))
+        throw new Error("WAAPI holds a run's start value before it starts only when no run on its track starts earlier, but one that holds before starts after another. Hold only the first run before.");
+}
+
+/** When the run's first iteration starts. */
+function startOf(run: TrackRun<TrackValue>): Seconds {
+    return run.part(0, 0).start;
 }
 
 /**

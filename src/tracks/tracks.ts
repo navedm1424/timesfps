@@ -6,13 +6,12 @@ import type {TweenStops} from "../tween-stops.ts";
 import type {Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import type {AnimationPlan, PlanNode, SequencePlan} from "../plan.ts";
-import {TrackRunBuilder} from "./track-run-builder.ts";
+import {TrackGroupBuilder, TrackItemBuilder, type TrackEntryBuilder} from "./track-entry-builder.ts";
 import {layer, resolveHolds} from "./track-layering.ts";
-import {type Oscillation, repeats, repeatsForever, type TrackEntry, type TrackRun} from "./track-runs.ts";
-import type {TrackValue} from "./track-values.ts";
+import {type Oscillation, repeats, repeatsForever, type TrackEntry, type TrackGroup, type TrackItem} from "./track-entries.ts";
 
-/** Its runs in the order they show over each other in: by when they start, then in the order they're declared; a merged run's continuations of what in it repeats forever come right under it. */
-export type Track = readonly TrackRun<TrackValue>[];
+/** Its entries in the order they show over each other in: by when they start, then in the order they're declared; a group's continuations of what in it repeats forever come right under it. */
+export type Track = readonly (TrackItem | TrackGroup)[];
 
 /** Each target's tracks by property: what every animation leaf plays on it, laid out in time. */
 export type Tracks = ByElementAndProperty<Track>;
@@ -97,8 +96,8 @@ interface TrackGroupEntry extends TrackEntry {
     entries: TrackEntry[];
 }
 
-/** Each merged builder, with the builders under it that continue what in it repeats forever. */
-type ContinuationsByBuilder = Map<TrackRunBuilder, readonly TrackRunBuilder[]>;
+/** Each repeating group's builder, with the builders under it that continue what in it repeats forever. */
+type ContinuationsByBuilder = Map<TrackEntryBuilder, readonly TrackEntryBuilder[]>;
 
 /** The run of what starts at `start` and repeats iterations of `duration` as `repeatOptions` say; one without duration doesn't repeat. */
 function trackEntryOf(start: Seconds, duration: Seconds, {repeat = 0, repeatDelay = 0, repeatMode = 'loop'}: RepeatOptions): TrackEntry {
@@ -109,8 +108,8 @@ function trackEntryOf(start: Seconds, duration: Seconds, {repeat = 0, repeatDela
 
 /**
  * The entries that animate one property of one target, in the groups of the sequences around them, built into its track once they're all added:
- * each item entry into a builder of its own, a group that doesn't repeat into its entries' builders, and a repeating group into one builder
- * that repeats as it does, its entries' builders merged into it, right over the continuations of what in it repeats forever.
+ * each item entry into a builder of its own, a group that doesn't repeat into its entries' builders, and a repeating group into a builder of its own
+ * that repeats as it does, with its entries' builders in it, right over the continuations of what in it repeats forever.
  */
 class TrackBuilder {
     /** The entries outside every group. */
@@ -143,7 +142,7 @@ class TrackBuilder {
     }
 
     /**
-     * Ends every group still started, then lays its entries' builders over each other in stacking order, each merged one's continuations right under it,
+     * Ends every group still started, then lays its entries' builders over each other in stacking order, each repeating group's continuations right under it,
      * and builds the ones that show, with their holds, as its track.
      */
     build(): Track {
@@ -166,40 +165,42 @@ class TrackBuilder {
 
     /**
      * The builders of the entries, in their order: an item entry's own, a group's that doesn't repeat in its place,
-     * and a repeating group's merged one, its continuations put in `continuations` against it.
+     * and a repeating group's own, its continuations put in `continuations` against it.
      */
-    private buildersOf(entries: readonly TrackEntry[], continuations: ContinuationsByBuilder): TrackRunBuilder[] {
+    private buildersOf(entries: readonly TrackEntry[], continuations: ContinuationsByBuilder): TrackEntryBuilder[] {
         return entries.flatMap(entry => {
             if (!isGroupEntry(entry)) {
                 const {path, easing, stops} = entry as TrackItemEntry;
-                return [TrackRunBuilder.of(this.naming.trackRunNameOf(path), entry, easing, stops)];
+                return [TrackItemBuilder.of(this.naming.trackItemNameOf(path), entry, easing, stops)];
             }
             if (!repeats(entry)) return this.buildersOf(entry.entries, continuations);
-            const merged = this.mergedBuilderOf(entry, continuations);
-            return merged ? [merged] : [];
+            const group = this.groupBuilderOf(entry, continuations);
+            return group ? [group] : [];
         });
     }
 
     /**
-     * The builder of a repeating group: its entries' builders, sorted, each played once when it repeats forever, laid over each other,
-     * and the ones that show merged into one that repeats as it does.
+     * The builder of a repeating group, which repeats as it does: its entries' builders, sorted, each played once when it repeats forever,
+     * laid over each other, and the ones that show in it, with their holds, none of them holding before.
      * Unless the group repeats forever itself, its continuations go in `continuations` against it: the outermost builders in it, at any depth,
      * that repeat forever, sorted by start. Nothing around them repeats forever, so they carry on once it ends. A group without item entries has none.
      */
-    private mergedBuilderOf({entries, ...timing}: TrackGroupEntry, continuations: ContinuationsByBuilder): TrackRunBuilder | undefined {
+    private groupBuilderOf({entries, ...timing}: TrackGroupEntry, continuations: ContinuationsByBuilder): TrackEntryBuilder | undefined {
         const builders = this.buildersOf(entries, continuations).toSorted(byStart);
         if (!builders.length) return undefined;
 
-        const merged = TrackRunBuilder.merge(this.nameOf(entries), timing, layer(builders.map(builder => builder.withoutRepeats())));
+        const showing = layer(builders.map(builder => builder.ends ? builder : builder.withoutRepeats()));
+        resolveHolds(showing, {firstHoldsBefore: false});
+        const group = TrackGroupBuilder.of(this.nameOf(entries), timing, showing);
         if (!repeatsForever(timing))
-            continuations.set(merged, builders.flatMap(builder => builder.ends ? continuations.get(builder) ?? [] : [builder]).toSorted(byStart));
-        return merged;
+            continuations.set(group, builders.flatMap(builder => builder.ends ? continuations.get(builder) ?? [] : [builder]).toSorted(byStart));
+        return group;
     }
 
-    /** The name of a merged run of the entries: from the paths of the item entries in them, at any depth, by when they start. */
+    /** The name of a repeating group with the entries: from the paths of the item entries in them, at any depth, by when they start, or, with one, that item's own name. */
     private nameOf(entries: readonly TrackEntry[]): string | undefined {
         const paths = itemEntriesIn(entries).toSorted(byStart).flatMap(({path}) => path ?? []);
-        return paths.length === 1 ? this.naming.trackRunNameOf(paths[0]) : this.naming.sequenceTrackRunNameOf(paths);
+        return paths.length === 1 ? this.naming.trackItemNameOf(paths[0]) : this.naming.trackGroupNameOf(paths);
     }
 
     /** Throws once it's built, since it can't `what` then. */

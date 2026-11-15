@@ -1,43 +1,9 @@
 import type {Easing} from "../easing.ts";
 import {linear} from "../easing-specifier.ts";
 import type {Progress, Seconds} from "../types.ts";
-import {partitionPoint} from "../utils/collections.ts";
-import {clamp, invLerp, lerp, remap} from "../utils/math.ts";
-import {type InterpolationToken, valueBetween} from "./track-values.ts";
-
-/**
- * What every other iteration of an oscillating repeat flips: its time, so it plays backwards,
- * or its values, so it runs from the end values to the start ones with its easing forwards.
- */
-export type Oscillation = 'time' | 'values';
-
-/** When a run starts, how long each of its iterations lasts, and how it repeats; one without duration doesn't repeat. */
-export interface TrackEntry {
-    /** After the outermost definition starts. */
-    start: Seconds;
-    duration: Seconds;
-    /** How many iterations follow its first; `Infinity` repeats forever. */
-    repeatCount: number;
-    /** How long it holds the value it ends on before each repeat. */
-    repeatDelay: Seconds;
-    /** Without it, every repeat starts over. */
-    oscillate?: Oscillation;
-}
-
-/** Whether it repeats; one without duration never does. */
-export function repeats({repeatCount}: TrackEntry): boolean {
-    return repeatCount > 0;
-}
-
-/** Whether it repeats forever; one without duration never does. */
-export function repeatsForever({repeatCount}: TrackEntry): boolean {
-    return repeatCount === Infinity;
-}
-
-export interface TrackStop<Value> {
-    offset: Progress;
-    value: Value;
-}
+import {invLerp, remap} from "../utils/math.ts";
+import {type Oscillation, type TrackEntry, type TrackGroup, type TrackItem, type TrackStop, valueAtProgress} from "../tracks/track-entries.ts";
+import type {InterpolationToken, TrackValue} from "../tracks/track-values.ts";
 
 /**
  * Stops played through an easing, over a window of its input time, and placed in time: `startOffset` to `endOffset` are fractions of the time
@@ -51,7 +17,7 @@ export class TrackClip<Value> {
         readonly startOffset: number,
         readonly endOffset: number,
         readonly easing: Easing,
-        /** Its values at offsets of its easing's progress, in order: between two stops, the value runs linearly with the progress, and past the outer ones, it continues the nearest two. */
+        /** Its values at offsets of its easing's progress, in order, as `valueAtProgress` reads them. */
         readonly stops: readonly TrackStop<Value>[],
         readonly windowStart: number = 0,
         readonly windowEnd: number = 1
@@ -82,18 +48,9 @@ export class TrackClip<Value> {
         return this.valueAtProgress(windowedEasing.progressAt(invLerp(startOffset, endOffset, offset)));
     }
 
-    /** The stop's own value at a stop; otherwise the value between the stops around the progress, or between the nearest two past either end. */
+    /** Its stops' value at `progress` (`valueAtProgress`). */
     valueAtProgress(progress: Progress): Value | InterpolationToken<Value> {
-        const {stops} = this;
-        const atOrAfterIndex = partitionPoint(stops, stop => stop.offset >= progress);
-        const stopThere = stops[atOrAfterIndex];
-        if (stopThere?.offset === progress) return stopThere.value;
-        if (stops.length === 1) return stops[0]!.value;
-
-        const endIndex = clamp(atOrAfterIndex, 1, stops.length - 1);
-        const start = stops[endIndex - 1]!;
-        const end = stops[endIndex]!;
-        return valueBetween(start.value, end.value, invLerp(start.offset, end.offset, progress));
+        return valueAtProgress(this.stops, progress);
     }
 
     /** The stops strictly between the two progresses, in either order. */
@@ -122,26 +79,20 @@ export class TrackClip<Value> {
     }
 
     /**
-     * The same clip in the iteration flipped by `oscillate`, from 1 minus its end to 1 minus its start:
-     * flipping its time runs its window backwards, and flipping its values moves each stop from its offset to 1 minus it.
+     * The same clip in the iteration flipped by `oscillate`, from 1 minus its end to 1 minus its start: flipping its time runs its window backwards,
+     * and flipping its values mirrors its window too, so its easing still runs forwards, and moves each stop from its offset to 1 minus it.
      */
     flip(oscillate: Oscillation): TrackClip<Value> {
         const {startOffset, endOffset, easing, stops, windowStart, windowEnd} = this;
         return oscillate === 'time'
             ? new TrackClip(1 - endOffset, 1 - startOffset, easing, stops, windowEnd, windowStart)
-            : new TrackClip(1 - endOffset, 1 - startOffset, easing, stops.map(({offset, value}) => ({offset: 1 - offset, value})).reverse(), windowStart, windowEnd);
+            : new TrackClip(1 - endOffset, 1 - startOffset, easing, stops.map(({offset, value}) => ({offset: 1 - offset, value})).reverse(), 1 - windowEnd, 1 - windowStart);
     }
 
     /** The same clip from `startOffset` to `endOffset`. */
     move(startOffset: number, endOffset: number): TrackClip<Value> {
         const {easing, stops, windowStart, windowEnd} = this;
         return new TrackClip(startOffset, endOffset, easing, stops, windowStart, windowEnd);
-    }
-
-    /** The same clip with each value transformed. */
-    map<Other>(transform: (value: Value) => Other): TrackClip<Other> {
-        const {startOffset, endOffset, easing, stops, windowStart, windowEnd} = this;
-        return new TrackClip(startOffset, endOffset, easing, stops.map(({offset, value}) => ({offset, value: transform(value)})), windowStart, windowEnd);
     }
 }
 
@@ -153,7 +104,7 @@ export interface TrackRunPart<Value> {
 }
 
 /**
- * One property's run on one target: its clips, one iteration of it, repeated as its timing says,
+ * A track's entry as one run of clips: its clips, one iteration of it, repeated as its timing says,
  * and whether it holds its value before it starts and after it ends.
  */
 export class TrackRun<Value> {
@@ -178,13 +129,52 @@ export class TrackRun<Value> {
 }
 
 /**
+ * The entry as one run of clips: an item's iteration is one clip through its stops,
+ * and a repeating group's is the iterations of its entries, laid out and laid over each other in it (`groupClipsOf`).
+ */
+export function trackRunOf(entry: TrackItem | TrackGroup): TrackRun<TrackValue> {
+    const {name, start, duration, repeatCount, repeatDelay, oscillate, holdsBefore, holdsAfter} = entry;
+    const timing: TrackEntry = {start, duration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
+    return new TrackRun(name, timing, iterationClipsOf(entry), holdsBefore, holdsAfter);
+}
+
+/** The clips of the entry's iteration, their offsets fractions of it. */
+function iterationClipsOf(entry: TrackItem | TrackGroup): TrackClip<TrackValue>[] {
+    return entry.type === 'item' ? [new TrackClip(0, 1, entry.easing, entry.stops)] : groupClipsOf(entry);
+}
+
+/**
+ * A repeating group's iteration: each entry's iterations, one after another, in the group's iteration as fractions of it, laid over each other in stacking order.
+ * One that starts within the ones before it replaces them while it lasts; one that starts where they end, or later, follows them, their end value held until then.
+ * Throws without entries, when its iteration has no duration, or when one of its entries holds before.
+ */
+function groupClipsOf(group: TrackGroup): TrackClip<TrackValue>[] {
+    if (!group.entries.length)
+        throw new Error("A repeating sequence's iteration lays out the entries in it, but it was given none. Give it at least one.");
+    if (!(group.duration > 0))
+        throw new Error(`A repeating sequence's iteration places the entries in it as fractions of its duration, which is ${group.duration}. Give it an iteration that lasts some time; one without duration never repeats.`);
+    if (group.entries.some(entry => entry.holdsBefore))
+        throw new Error("WAAPI doesn't hold an entry of a repeating sequence before it starts, but one of them holds before. Hold none of a repeating sequence's entries before.");
+
+    const [first, ...rest] = group.entries.map(entry => clipsIn(layOutIterations(entry), group));
+    return rest.reduce(overlayClips, first!);
+}
+
+/** All of the entry's iterations, one after another; it must end. */
+function layOutIterations(entry: TrackItem | TrackGroup): TrackRunPart<TrackValue> {
+    if (entry.repeatCount === Infinity)
+        throw new Error("WAAPI lays out every iteration of an entry of a repeating sequence, but one of them repeats forever. Give the sequence that one without its repeats.");
+    return partOf(entry, iterationClipsOf(entry), 0, entry.repeatCount);
+}
+
+/**
  * A run's iterations from `first` to `last`, one after another, each one's end value held until the next starts, as a part from where its first clip starts
  * to where its last one ends, 0 to 1; with `holdsUntilNext`, the last one's is held too, until the iteration after it would start. `clips` are one iteration.
  * A part without duration keeps its clips' offsets in their iteration.
  * Every other iteration of an oscillation is laid out back to front, each clip flipped (`TrackClip.flip`).
  * Throws without clips, or for iterations the run doesn't have.
  */
-export function partOf<Value>(
+function partOf<Value>(
     timing: TrackEntry,
     clips: readonly TrackClip<Value>[],
     first: number,
@@ -206,23 +196,40 @@ export function partOf<Value>(
     const duration = end - start;
     if (duration === 0) return {start, duration, clips: firstIteration.clips};
 
-    const placed = iterations.map(iteration => moveClips(iteration, start, duration));
+    const placed = iterations.map(iteration => clipsIn(iteration, {start, duration}));
     const lastClip = placed.at(-1)!.at(-1)!;
     return {start, duration, clips: [...joinClips(placed), ...(next ? holdClips(lastClip.endValue, lastClip.endOffset, 1) : [])]};
 }
 
-/** The part's clips moved into the time that starts at `start` and lasts `duration`, their offsets fractions of it; it must have duration. */
-export function moveClips<Value>(part: TrackRunPart<Value>, start: Seconds, duration: Seconds): TrackClip<Value>[] {
-    const offsetOf = (offset: number) => (timeAt(part, offset) - start) / duration;
-    return part.clips.map(clip => clip.move(offsetOf(clip.startOffset), offsetOf(clip.endOffset)));
+/** The laid-out clips in `time`: at the same moments, their offsets now fractions of it, which must have duration. */
+function clipsIn<Value>(laidOut: TrackRunPart<Value>, time: { start: Seconds; duration: Seconds }): TrackClip<Value>[] {
+    const offsetOf = (offset: number) => (timeAt(laidOut, offset) - time.start) / time.duration;
+    return laidOut.clips.map(clip => clip.move(offsetOf(clip.startOffset), offsetOf(clip.endOffset)));
 }
 
 /** Groups of clips placed in the same time, one after another, each one's end value held until the next starts. */
-export function joinClips<Value>(groups: readonly (readonly TrackClip<Value>[])[]): TrackClip<Value | InterpolationToken<Value>>[] {
+function joinClips<Value>(groups: readonly (readonly TrackClip<Value>[])[]): TrackClip<Value | InterpolationToken<Value>>[] {
     return groups.flatMap((clips, index): TrackClip<Value | InterpolationToken<Value>>[] => {
         const previous = groups[index - 1]?.at(-1);
         return previous ? [...holdClips(previous.endValue, previous.endOffset, clips[0]!.startOffset), ...clips] : [...clips];
     });
+}
+
+/**
+ * The clips with `top`'s in place of their own for as long as `top` lasts, all placed in the same time,
+ * or, when `top` starts where they end or later, followed by `top`'s, their end value held until then.
+ */
+function overlayClips(below: readonly TrackClip<TrackValue>[], top: readonly TrackClip<TrackValue>[]): TrackClip<TrackValue>[] {
+    const start = below[0]!.startOffset;
+    const end = below.at(-1)!.endOffset;
+    const topStart = top[0]!.startOffset;
+    if (topStart >= end) return joinClips([below, top]);
+    return [...trimClips(below, start, topStart), ...top, ...trimClips(below, top.at(-1)!.endOffset, end)];
+}
+
+/** The clips, each trimmed to `start` to `end` (`TrackClip.trim`). */
+function trimClips(clips: readonly TrackClip<TrackValue>[], start: number, end: number): TrackClip<TrackValue>[] {
+    return clips.flatMap(clip => clip.trim(start, end) ?? []);
 }
 
 /** The iteration at `index`, as a part: back to front, each clip flipped, every other one of an oscillation. */
