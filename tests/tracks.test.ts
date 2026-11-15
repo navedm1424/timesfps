@@ -18,7 +18,7 @@ import {cssEasingOf, type NativeEasing} from "../src/waapi/native-easing.ts";
 import {alignNumbers, type CSSValueResolver} from "../src/waapi/css-values.ts";
 import {naming, type EntryPath} from "../src/naming.ts";
 import {TrackRunBuilder} from "../src/tracks/track-run-builder.ts";
-import {layer} from "../src/tracks/track-layering.ts";
+import {layer, resolveHolds} from "../src/tracks/track-layering.ts";
 import {TracksResolver} from "../src/tracks/tracks.ts";
 import {TweenStops} from "../src/tween-stops.ts";
 import {type AnimationTracks, NativeEffectsResolver} from "../src/waapi/tracks.ts";
@@ -697,13 +697,14 @@ describe("NativeEffectsResolver repeating sequences", () => {
     });
 });
 
-describe("layer", () => {
+describe("layer and resolveHolds", () => {
     const builderOf = (name: string, start: Seconds, duration: Seconds) =>
-        TrackRunBuilder.fromStops(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
+        TrackRunBuilder.of(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
 
     it("holds a run after it ends when the one under its end never shows", () => {
-        const runs = layer([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
-        expect(runs.map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
+        const showing = layer([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
+        resolveHolds(showing);
+        expect(showing.map(builder => builder.build()).map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
             {name: 'b', holdsAfter: true},
             {name: 'c', holdsAfter: true}
         ]);

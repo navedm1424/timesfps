@@ -31,7 +31,7 @@ export class TrackRunBuilder {
     ) {}
 
     /** An entry's iteration through its stops, each missing value a placeholder of its own. */
-    static fromStops(name: string | undefined, timing: TrackEntry, easing: Easing, stops: TweenStops): TrackRunBuilder {
+    static of(name: string | undefined, timing: TrackEntry, easing: Easing, stops: TweenStops): TrackRunBuilder {
         const clipStops = stops.stops.map(({offset, value}) => ({offset, value: value ?? placeholder()}));
         return new TrackRunBuilder(name, timing, [new TrackClip(0, 1, easing, clipStops)]);
     }
@@ -41,7 +41,7 @@ export class TrackRunBuilder {
      * One that starts within the ones before it replaces them while it lasts; one that starts where they end, or later, follows them, their end value held until then.
      * Throws without children, or when `timing` has no duration; each one must end.
      */
-    static fromChildren(name: string | undefined, timing: TrackEntry, children: readonly TrackRunBuilder[]): TrackRunBuilder {
+    static merge(name: string | undefined, timing: TrackEntry, children: readonly TrackRunBuilder[]): TrackRunBuilder {
         if (!children.length)
             throw new Error("A repeating sequence's iteration merges the iterations of the runs in it, but it was given none. Merge at least one.");
         if (!(timing.duration > 0))
@@ -118,7 +118,7 @@ export class TrackRunBuilder {
         if (this.ends) assignIfMissing(this.endValue, value);
     }
 
-    /** Itself when it ends; otherwise a builder of its first iteration only, without repeats, with the same values, so a value assigned to one is the other's too. */
+    /** A builder of its first iteration only, without repeats, with the same values, so a value assigned to one is the other's too. */
     withoutRepeats(): TrackRunBuilder {
         const {oscillate: _, ...rest} = this.timing;
         return new TrackRunBuilder(this.name, {...rest, repeatCount: 0, repeatDelay: 0}, this.clips);

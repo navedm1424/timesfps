@@ -7,7 +7,7 @@ import type {Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import type {AnimationPlan, PlanNode, SequencePlan} from "../plan.ts";
 import {TrackRunBuilder} from "./track-run-builder.ts";
-import {layer, merge} from "./track-layering.ts";
+import {layer, resolveHolds} from "./track-layering.ts";
 import {type Oscillation, repeats, repeatsForever, type TrackEntry, type TrackRun} from "./track-runs.ts";
 import type {TrackValue} from "./track-values.ts";
 
@@ -142,7 +142,10 @@ class TrackBuilder {
         this.activeEntries.push(group);
     }
 
-    /** Ends every group still started, then lays its entries' builders over each other in stacking order, each merged one's continuations right under it, as its track. */
+    /**
+     * Ends every group still started, then lays its entries' builders over each other in stacking order, each merged one's continuations right under it,
+     * and builds the ones that show, with their holds, as its track.
+     */
     build(): Track {
         this.requireOpen("build it again");
         while (this.groups.length)
@@ -151,7 +154,9 @@ class TrackBuilder {
 
         const continuations: ContinuationsByBuilder = new Map();
         const builders = this.buildersOf(this.rootEntries, continuations).toSorted(byStart);
-        return layer(builders.flatMap(builder => [...continuations.get(builder) ?? [], builder]));
+        const showing = layer(builders.flatMap(builder => [...continuations.get(builder) ?? [], builder]));
+        resolveHolds(showing);
+        return showing.map(builder => builder.build());
     }
 
     /** The entries of the group started last, or the ones outside every group without one. */
@@ -167,7 +172,7 @@ class TrackBuilder {
         return entries.flatMap(entry => {
             if (!isGroupEntry(entry)) {
                 const {path, easing, stops} = entry as TrackItemEntry;
-                return [TrackRunBuilder.fromStops(this.naming.trackRunNameOf(path), entry, easing, stops)];
+                return [TrackRunBuilder.of(this.naming.trackRunNameOf(path), entry, easing, stops)];
             }
             if (!repeats(entry)) return this.buildersOf(entry.entries, continuations);
             const merged = this.mergedBuilderOf(entry, continuations);
@@ -176,7 +181,8 @@ class TrackBuilder {
     }
 
     /**
-     * The builder of a repeating group: its entries' builders, sorted, merged into one that repeats as it does, each played once when it repeats forever.
+     * The builder of a repeating group: its entries' builders, sorted, each played once when it repeats forever, laid over each other,
+     * and the ones that show merged into one that repeats as it does.
      * Unless the group repeats forever itself, its continuations go in `continuations` against it: the outermost builders in it, at any depth,
      * that repeat forever, sorted by start. Nothing around them repeats forever, so they carry on once it ends. A group without item entries has none.
      */
@@ -184,7 +190,7 @@ class TrackBuilder {
         const builders = this.buildersOf(entries, continuations).toSorted(byStart);
         if (!builders.length) return undefined;
 
-        const merged = merge(this.nameOf(entries), timing, builders.map(builder => builder.withoutRepeats()));
+        const merged = TrackRunBuilder.merge(this.nameOf(entries), timing, layer(builders.map(builder => builder.withoutRepeats())));
         if (!repeatsForever(timing))
             continuations.set(merged, builders.flatMap(builder => builder.ends ? continuations.get(builder) ?? [] : [builder]).toSorted(byStart));
         return merged;
