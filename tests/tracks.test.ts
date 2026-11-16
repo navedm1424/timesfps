@@ -5,7 +5,7 @@ import {type AnimationValues, resolveTargets} from "../src/dom/mapping.ts";
 import {CubicBezierEasing, type Easing, StepsEasing} from "../src/easing.ts";
 import {linear} from "../src/easing-specifier.ts";
 import {NumericStops} from "./numeric-stops.ts";
-import {type AnimationPlan, plan, type PlanNode, type SequencePlan} from "../src/plan.ts";
+import {type AnimationPlan, plan, type Plan, type SequencePlan} from "../src/plan.ts";
 import {SequenceDefinition} from "../src/sequence.ts";
 import {SequenceTiming} from "../src/sequence-timing.ts";
 import type {PlaybackOptions, RepeatOptions} from "../src/playback-options.ts";
@@ -67,7 +67,7 @@ type SequenceRepeats = Partial<Pick<SequencePlan, 'repeatCount' | 'repeatDelay' 
 
 /** The plan with the sequence at each path in `repeatsByPath` repeating as given there; paths are within the plan. */
 function withRepeats(plan: SequencePlan, repeatsByPath: { [path: EntryPath]: SequenceRepeats }, path?: EntryPath): SequencePlan {
-    const entries = [...plan.entries].map(([name, entry]): [string, PlanNode] => {
+    const entries = [...plan.entries].map(([name, entry]): [string, Plan] => {
         if (entry.type === 'animation')
             return [name, entry];
         const entryPath = naming.entryPathOf(path, name);
@@ -76,7 +76,7 @@ function withRepeats(plan: SequencePlan, repeatsByPath: { [path: EntryPath]: Seq
     return {...plan, entries: new Map(entries)};
 }
 
-/** Where an entry placed right after the sequence starts, which is the sequence's anchor duration; paths are within the sequence. */
+/** Where an entry placed right after the sequence starts, which is the sequence's span duration; paths are within the sequence. */
 function sequenceEndOf(
     sequence: SequenceTiming,
     valuesByPath: { [path: EntryPath]: AnimationValues },
@@ -225,14 +225,14 @@ describe("plans", () => {
     });
 
     it("gives how an animation repeats: by its count, delay and oscillation, a reverse flipping its time and a mirror its values", () => {
-        const repeatsOf = (options: RepeatOptions) => {
+        const repeatDescriptorOf = (options: RepeatOptions) => {
             const {repeatCount, repeatDelay, oscillate} = animationPlanOf(AnimationTiming.of({duration: 1}, options), [element]);
             return {repeatCount, repeatDelay, oscillate};
         };
-        expect(repeatsOf({})).toEqual({repeatCount: 0, repeatDelay: 0, oscillate: undefined});
-        expect(repeatsOf({repeat: 2, repeatDelay: 0.5})).toEqual({repeatCount: 2, repeatDelay: 0.5, oscillate: undefined});
-        expect(repeatsOf({repeat: Infinity, repeatMode: 'reverse'})).toEqual({repeatCount: Infinity, repeatDelay: 0, oscillate: 'time'});
-        expect(repeatsOf({repeat: 1, repeatDelay: 1, repeatMode: 'mirror'})).toEqual({repeatCount: 1, repeatDelay: 1, oscillate: 'values'});
+        expect(repeatDescriptorOf({})).toEqual({repeatCount: 0, repeatDelay: 0, oscillate: undefined});
+        expect(repeatDescriptorOf({repeat: 2, repeatDelay: 0.5})).toEqual({repeatCount: 2, repeatDelay: 0.5, oscillate: undefined});
+        expect(repeatDescriptorOf({repeat: Infinity, repeatMode: 'reverse'})).toEqual({repeatCount: Infinity, repeatDelay: 0, oscillate: 'time'});
+        expect(repeatDescriptorOf({repeat: 1, repeatDelay: 1, repeatMode: 'mirror'})).toEqual({repeatCount: 1, repeatDelay: 1, oscillate: 'values'});
     });
 
     it("doesn't repeat an animation without duration, nor a sequence", () => {
@@ -843,7 +843,7 @@ describe("TracksResolver", () => {
 
 describe("NativeEffectsResolver holds", () => {
     const itemOf = (name: string, start: Seconds, holdsBefore: boolean): TrackItem => ({
-        type: 'item', name, start, duration: 1, repeatCount: 0, repeatDelay: 0, easing: linear,
+        type: 'item', name, start, iterationDuration: 1, repeatCount: 0, repeatDelay: 0, easing: linear,
         stops: [{offset: 0, value: 0}, {offset: 1, value: 1}], holdsBefore, holdsAfter: true
     });
     const resolve = (track: Track) => NativeEffectsResolver.resolve(new Map([[element, {x: track}]]) satisfies Tracks, numericResolver);
@@ -857,14 +857,14 @@ describe("NativeEffectsResolver holds", () => {
     });
 
     it("throws for an entry of a repeating sequence that holds before", () => {
-        const group: TrackGroup = {type: 'group', name: 's', start: 0, duration: 1, repeatCount: 1, repeatDelay: 0, entries: [itemOf('a', 0, true)], holdsBefore: true, holdsAfter: true};
+        const group: TrackGroup = {type: 'group', name: 's', start: 0, iterationDuration: 1, repeatCount: 1, repeatDelay: 0, entries: [itemOf('a', 0, true)], holdsBefore: true, holdsAfter: true};
         expect(() => resolve([group])).toThrow("Hold none of a repeating sequence's entries before.");
     });
 });
 
 describe("layer and resolveHolds", () => {
-    const builderOf = (name: string, start: Seconds, duration: Seconds) =>
-        TrackItemBuilder.of(name, {start, duration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
+    const builderOf = (name: string, start: Seconds, iterationDuration: Seconds) =>
+        TrackItemBuilder.of(name, {start, iterationDuration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
 
     it("holds a run after it ends when the one under its end never shows", () => {
         const showing = layer([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);

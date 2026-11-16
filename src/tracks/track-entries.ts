@@ -1,21 +1,15 @@
 import type {Easing} from "../easing.ts";
-import type {Oscillation} from "../plan.ts";
+import type {RepeatDescriptor} from "../plan.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {partitionPoint} from "../utils/collections.ts";
 import {clamp, invLerp} from "../utils/math.ts";
 import {type InterpolationToken, type TrackValue, valueBetween} from "./track-values.ts";
 
 /** When a run starts, how long each of its iterations lasts, and how it repeats; one without duration doesn't repeat. */
-export interface TrackEntry {
+export interface TrackEntry extends RepeatDescriptor {
     /** After the outermost definition starts. */
     start: Seconds;
-    duration: Seconds;
-    /** How many iterations follow its first; `Infinity` repeats forever. */
-    repeatCount: number;
-    /** How long it holds the value it ends on before each repeat. */
-    repeatDelay: Seconds;
-    /** Without it, every repeat starts over. */
-    oscillate?: Oscillation;
+    iterationDuration: Seconds;
 }
 
 /** Whether it repeats; one without duration never does. */

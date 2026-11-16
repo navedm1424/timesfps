@@ -4,7 +4,7 @@ import type {EntryPath, Naming} from "../naming.ts";
 import type {TweenStops} from "../tween-stops.ts";
 import type {Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
-import type {AnimationPlan, PlanNode, SequencePlan} from "../plan.ts";
+import type {AnimationPlan, Plan, SequencePlan} from "../plan.ts";
 import {TrackGroupBuilder, TrackItemBuilder, type TrackEntryBuilder} from "./track-entry-builder.ts";
 import {layer, resolveHolds} from "./track-layering.ts";
 import {repeats, repeatsForever, type TrackEntry, type TrackGroup, type TrackItem} from "./track-entries.ts";
@@ -21,27 +21,27 @@ export class TracksResolver {
     /** The timings of the sequences being added, the outermost first: every track builder has a group of each one started. */
     private readonly startedGroups: TrackEntry[] = [];
 
-    constructor(private readonly plan: PlanNode, private readonly naming: Naming) {}
+    constructor(private readonly plan: Plan, private readonly naming: Naming) {}
 
     /** Adds every animation leaf of the plan to its targets' track builders, then builds them. */
     resolve(): Tracks {
-        this.addNode(this.plan);
+        this.add(this.plan);
         return mapByElementAndProperty(this.buildersByTarget, builder => builder.build());
     }
 
     /** Adds an animation or a sequence. */
-    private addNode(node: PlanNode, path?: EntryPath): void {
-        if (node.type === 'sequence')
-            this.addSequence(node, path);
+    private add(plan: Plan, path?: EntryPath): void {
+        if (plan.type === 'sequence')
+            this.addSequence(plan, path);
         else
-            this.addAnimation(node, path);
+            this.addAnimation(plan, path);
     }
 
     /** Adds its entries in their order, in a group of every track builder that runs as it does. */
     private addSequence(sequence: SequencePlan, path?: EntryPath): void {
         this.startGroup(trackEntryOf(sequence.start, sequence));
         for (const [name, entryPlan] of sequence.entries)
-            this.addNode(entryPlan, this.naming.entryPathOf(path, name));
+            this.add(entryPlan, this.naming.entryPathOf(path, name));
         this.endGroup();
     }
 
@@ -99,8 +99,8 @@ interface TrackGroupEntry extends TrackEntry {
 type ContinuationsByBuilder = Map<TrackEntryBuilder, readonly TrackEntryBuilder[]>;
 
 /** The run of what starts at `start` and repeats its iterations as the entry's plan says. */
-function trackEntryOf(start: Seconds, {iterationDuration, repeatCount, repeatDelay, oscillate}: PlanNode): TrackEntry {
-    return {start, duration: iterationDuration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
+function trackEntryOf(start: Seconds, {iterationDuration, repeatCount, repeatDelay, oscillate}: Plan): TrackEntry {
+    return {start, iterationDuration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
 }
 
 /**

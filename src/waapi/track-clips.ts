@@ -134,8 +134,8 @@ export class TrackRun<Value> {
  * and a repeating group's is the iterations of its entries, laid out and laid over each other in it (`groupClipsOf`).
  */
 export function trackRunOf(entry: TrackItem | TrackGroup): TrackRun<TrackValue> {
-    const {name, start, duration, repeatCount, repeatDelay, oscillate, holdsBefore, holdsAfter} = entry;
-    const timing: TrackEntry = {start, duration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
+    const {name, start, iterationDuration, repeatCount, repeatDelay, oscillate, holdsBefore, holdsAfter} = entry;
+    const timing: TrackEntry = {start, iterationDuration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
     return new TrackRun(name, timing, iterationClipsOf(entry), holdsBefore, holdsAfter);
 }
 
@@ -152,12 +152,13 @@ function iterationClipsOf(entry: TrackItem | TrackGroup): TrackClip<TrackValue>[
 function groupClipsOf(group: TrackGroup): TrackClip<TrackValue>[] {
     if (!group.entries.length)
         throw new Error("A repeating sequence's iteration lays out the entries in it, but it was given none. Give it at least one.");
-    if (!(group.duration > 0))
-        throw new Error(`A repeating sequence's iteration places the entries in it as fractions of its duration, which is ${group.duration}. Give it an iteration that lasts some time; one without duration never repeats.`);
+    if (!(group.iterationDuration > 0))
+        throw new Error(`A repeating sequence's iteration places the entries in it as fractions of its duration, which is ${group.iterationDuration}. Give it an iteration that lasts some time; one without duration never repeats.`);
     if (group.entries.some(entry => entry.holdsBefore))
         throw new Error("WAAPI doesn't hold an entry of a repeating sequence before it starts, but one of them holds before. Hold none of a repeating sequence's entries before.");
 
-    const [first, ...rest] = group.entries.map(entry => clipsIn(layOutIterations(entry), group));
+    const iteration = {start: group.start, duration: group.iterationDuration};
+    const [first, ...rest] = group.entries.map(entry => clipsIn(layOutIterations(entry), iteration));
     return rest.reduce(overlayClips, first!);
 }
 
@@ -234,9 +235,9 @@ function trimClips(clips: readonly TrackClip<TrackValue>[], start: number, end: 
 }
 
 /** The iteration at `index`, as a part: back to front, each clip flipped, every other one of an oscillation. */
-function iterationAt<Value>({start, duration, repeatDelay, oscillate}: TrackEntry, clips: readonly TrackClip<Value>[], index: number): TrackRunPart<Value> {
+function iterationAt<Value>({start, iterationDuration, repeatDelay, oscillate}: TrackEntry, clips: readonly TrackClip<Value>[], index: number): TrackRunPart<Value> {
     const iterationClips = index % 2 === 0 || !oscillate ? clips : clips.map(clip => clip.flip(oscillate)).reverse();
-    return {start: start + index * (duration + repeatDelay), duration, clips: iterationClips};
+    return {start: start + index * (iterationDuration + repeatDelay), duration: iterationDuration, clips: iterationClips};
 }
 
 /** The time at `offset` of the part, after the outermost definition starts. */

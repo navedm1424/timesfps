@@ -390,9 +390,9 @@ Times are local to the sequence an entry is in.
 | Term | Meaning |
 |---|---|
 | **Start** | The entry's position, before its delay. References to an entry's start resolve to it. |
-| **Anchor duration** | From the start to where the entry ends. An infinite repeat counts only its first iteration, since infinity can't be referred to. An entry with no elements has 0.<br>• **An animation's:** its latest staggered delay, then its iterations and their repeat delays.<br>• **A sequence's:** until the latest end among its entries. |
-| **End** | The start plus the anchor duration. References to an entry's end resolve to it. |
-| **Duration** | For positions, an entry's `EntrySpan` runs from its start for its anchor duration. The inserted entry's doesn't depend on its position, so it's known before the entry is placed. |
+| **Span duration** | From the start to where the entry ends. An infinite repeat counts only its first iteration, since infinity can't be referred to. An entry with no elements has 0.<br>• **An animation's:** its latest staggered delay, then its iterations and their repeat delays.<br>• **A sequence's:** until the latest end among its entries. |
+| **End** | The start plus the span duration. References to an entry's end resolve to it. |
+| **Duration** | For positions, an entry's `EntrySpan` runs from its start for its span duration. The inserted entry's doesn't depend on its position, so it's known before the entry is placed. |
 | **Previous entry** | The entry added just before. For the first entry, it's the start of the sequence, with a duration of 0. |
 | **Everything so far** | From 0 to the latest end among the earlier entries, or 0 with none. |
 
@@ -639,7 +639,7 @@ Every error has the type of what went wrong:
 | `src/tween-stops.ts` | `TweenStops`: one property's stops, read from their forms and checked, with a stop at each end |
 | `src/animation.ts` | `animation` and `AnimationDefinition` |
 | `src/sequence.ts` | `sequence`, `SequenceDefinition`, `SequenceDefinitionBuilder`, its entries, `Definition` and `EntryPlacementOptions`, and making a sequence timing's entries' definitions from its mapping |
-| `src/plan.ts` | `plan`, through `AnimationPlanner` and `SequencePlanner`: the plan tree of starts, durations and repeats, with each animation's targets and where it starts on each, and `Oscillation` |
+| `src/plan.ts` | `plan`, through `AnimationPlanner` and `SequencePlanner`: the plan tree of starts, durations and repeats, with each animation's targets and where it starts on each, `RepeatDescriptor` and `Oscillation` |
 | `src/animator.ts` | The `Animator` abstract class, which turns `animate`'s forms into a definition for the engine's `animateDefinition` |
 | `src/internals.ts` | The internals `site/` uses, which it imports as `timesfps/internals`; `tsconfig.json` leaves it out of the build |
 | `src/utils/validation.ts` | `checkNumber`, `checkPositive`, `requireNumber` and `requireProperty` |
@@ -691,7 +691,7 @@ The plan walks the definition tree, which holds every target and value, so nothi
 
 ### 5.1 Targets
 
-The plan resolves each animation definition's target as it reaches it, through the `TargetsResolver` it's given. The animator's resolves each target once per `animate`, however many times a sequence plays it, through `resolveTargets` (§3.3): a selector is queried in the scope, and a function is called with it. Elements are deduplicated. An animation with no elements has an iteration and anchor duration of 0, so it starts and ends at its position.
+The plan resolves each animation definition's target as it reaches it, through the `TargetsResolver` it's given. The animator's resolves each target once per `animate`, however many times a sequence plays it, through `resolveTargets` (§3.3): a selector is queried in the scope, and a function is called with it. Elements are deduplicated. An animation with no elements has an iteration and span duration of 0, so it starts and ends at its position.
 
 ### 5.2 Values
 
@@ -725,16 +725,16 @@ Reversed stops, holds, trimming and every repeat hold the same values, so the va
 
 Leaves also keep `targets` (`StaggeredTarget`): each element as `target`, with the `start` of the animation on it, the entry's `start` plus the animation's own delay for it (its number, or its stagger at the element's index).
 
-**Repeats** (`repeatsOf`). An animation's timing gives its `RepeatOptions`, which the planner turns into `repeatCount`, `repeatDelay` and `oscillate` once: `repeat` is the count, `reverse` flips `'time'`, `mirror` flips `'values'`, and `loop` has no `oscillate`. An animation without duration, which includes one without targets, or without repeats has a `repeatCount` and `repeatDelay` of 0 and no `oscillate`. A sequence doesn't repeat until sequences can; tests give repeating ones their repeats (§7).
+**Repeats** (`RepeatDescriptor`, `repeatDescriptorOf`). An animation's timing gives its `RepeatOptions`, which the planner turns into a `RepeatDescriptor`, `repeatCount`, `repeatDelay` and `oscillate`, once: `repeat` is the count, `reverse` flips `'time'`, `mirror` flips `'values'`, and `loop` has no `oscillate`. An animation without duration, which includes one without targets, or without repeats has a `repeatCount` and `repeatDelay` of 0 and no `oscillate`. A sequence doesn't repeat until sequences can; tests give repeating ones their repeats (§7).
 
 **Planning in steps.** Each planner plans one entry, once:
 1. `of(definition, targetsResolver)` takes everything that doesn't depend on where the entry sits. An `AnimationPlanner` resolves the targets, each target's own delay, the easing, the durations and the repeats. A `SequencePlanner` makes and positions the planners of its whole subtree, as below.
-2. `position(descriptor, entrySpans)` resolves the position among the entries before it, within its sequence, clamped to 0. A `=%` offset reads the planner's own anchor duration, which is already known.
+2. `position(descriptor, entrySpans)` resolves the position among the entries before it, within its sequence, clamped to 0. A `=%` offset reads the planner's own span duration, which is already known.
 3. `plan(sequenceStart)` gives the node, its `start` its position after `sequenceStart`, where its sequence starts (0 for the outermost definition). Where a sequence starts is only known once it's positioned in the one around it, which happens after its own `of`, so this is the step that turns positions into starts.
 
-The anchor duration (§2.7.2) stays in the planners: only placing the entries after an entry and working out its sequence's durations need it, and both happen while planning. It reads the timing's `RepeatOptions` as they are.
+The span duration (§2.7.2) stays in the planners: only placing the entries after an entry and working out its sequence's durations need it, and both happen while planning. It reads the timing's `RepeatOptions` as they are.
 
-`SequencePlanner.of` makes a planner for each entry, positions it and keeps its `span` for the positions after it. A sequence's iteration duration and anchor duration are both the latest end among its entries. Its `plan(sequenceStart)` plans each entry from its own `start`.
+`SequencePlanner.of` makes a planner for each entry, positions it and keeps its `span` for the positions after it. A sequence's iteration duration and span duration are both the latest end among its entries. Its `plan(sequenceStart)` plans each entry from its own `start`.
 
 ### 5.4 Tracks
 
@@ -754,13 +754,13 @@ new TracksResolver(plan, naming).resolve()
 
 **1. Walk the plan.** Entries are added to their `TrackBuilder` in declaration order, which keeps them in that order. `TracksResolver` gives every `TrackBuilder` its `naming`.
 - **Runs.** A `TrackEntry` (`src/tracks/track-entries.ts`) is the run every entry of a track has. `trackEntryOf(start, node)` makes one from a start and a plan's repeats:
-  - `start`, after the outermost definition starts, and `duration`, one iteration (the plan's `iterationDuration`);
-  - `repeatCount`, `repeatDelay` and `oscillate`, as the plan gives them (§5.3).
+  - `start`, after the outermost definition starts, and `iterationDuration`, as the plan gives it;
+  - `repeatCount`, `repeatDelay` and `oscillate`: `TrackEntry` extends the plan's `RepeatDescriptor`, and takes them as the plan gives them (§5.3).
 - Each sequence gets a run from its plan's `start`.
 - **Groups.** `addSequence` starts a group of the sequence's run in every track builder (`startGroup`), adds its entries, then ends the group (`endGroup`). The resolver keeps the runs of the groups started (`startedGroups`), and a track builder made while they are starts them too. So every track builder has a group of every sequence, whether or not anything in it is on its track.
 - Each leaf adds a `TrackItemEntry` per target and property, a `TrackEntry` with:
   - `start`: where the animation starts on the target, from the plan's `targets`;
-  - `duration` and its repeats from its own plan, and its `easing` and `stops`;
+  - `iterationDuration` and its repeats from its own plan, and its `easing` and `stops`;
   - `path`: its entry path (`naming.entryPathOf`).
 
 **Track builders** (`TrackBuilder`, `src/tracks/tracks.ts`) hold a track's entries in the groups of the sequences around them:
@@ -854,7 +854,7 @@ A `TrackStop` is a value at an offset of an easing's progress. `valueAtProgress(
 |---|---|
 | `type` | `'item'` or `'group'` |
 | `name` | From the `Naming`: an item's entry path, or the paths of a group's leaves joined with `+`, such as `intro>title+intro>subtitle`. A continuation is named after what it continues. An animation on its own has none |
-| `start`, `duration`, `repeatCount`, `repeatDelay`, `oscillate` | Its run (`TrackEntry`). A group's are its sequence's |
+| `start`, `iterationDuration`, `repeatCount`, `repeatDelay`, `oscillate` | Its run (`TrackEntry`). A group's are its sequence's |
 | `easing`, `stops` | An item's: its easing, and its stops as `TrackValue`s |
 | `entries` | A group's: its entries as they play in its first iteration, in stacking order, none of them holding before. Each of its iterations plays them, and every other one of an oscillation flips them |
 | `holdsBefore` | Whether it holds its start value before it starts |
@@ -1015,7 +1015,7 @@ Values are tested through stand-in `CSSValueResolver`s that align numbers with `
 
 ## 8. Limitations and open work
 
-- **Repeats without duration.** An entry without duration plays once on its track (§5.4), but its anchor duration (§2.7.2) still counts its repeat delays.
+- **Repeats without duration.** An entry without duration plays once on its track (§5.4), but its span duration (§2.7.2) still counts its repeat delays.
 - **Timed tweens** exist as `TimedTweenTiming`, which is internal and can't be placed in a sequence or played yet.
 - **The before flag.** Only an effect's own easing gets WAAPI's before flag. So an effect whose first keyframe starts with a jump, such as jump-start steps split by a stop or a reversed jump-end, shows the jumped value during its backwards fill.
 - **Sequences have no playback options:** no delay, stagger or repeats. Merging a repeating sequence's entries (§5.4) is in place, but nothing reaches it until sequences repeat.

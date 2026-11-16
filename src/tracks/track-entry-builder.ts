@@ -132,15 +132,15 @@ export abstract class TrackEntryBuilder {
 
     /** Where `time` falls: in its iteration then, or the one before it in a repeat delay, the first before it starts, or the last after it ends. */
     protected iterationTimeAt(time: Seconds): IterationTime {
-        const {start, duration, repeatDelay} = this.timing;
-        const index = this.lastIterationIndex === 0 ? 0 : clamp(Math.floor((time - start) / (duration + repeatDelay)), 0, this.lastIterationIndex);
+        const {start, iterationDuration, repeatDelay} = this.timing;
+        const index = this.lastIterationIndex === 0 ? 0 : clamp(Math.floor((time - start) / (iterationDuration + repeatDelay)), 0, this.lastIterationIndex);
         return {index, elapsed: time - this.iterationStartOf(index), flip: this.flipOf(index)};
     }
 
     /** When its iteration at `index` starts. */
     protected iterationStartOf(index: number): Seconds {
-        const {start, duration, repeatDelay} = this.timing;
-        return start + index * (duration + repeatDelay);
+        const {start, iterationDuration, repeatDelay} = this.timing;
+        return start + index * (iterationDuration + repeatDelay);
     }
 
     /** What its iteration at `index` flips: every other one of an oscillation does. */
@@ -177,13 +177,13 @@ export class TrackItemBuilder extends TrackEntryBuilder {
 
     get end(): Seconds {
         if (!this.ends) return Infinity;
-        return this.iterationStartOf(this.lastIterationIndex) + this.timing.duration;
+        return this.iterationStartOf(this.lastIterationIndex) + this.timing.iterationDuration;
     }
 
     valueAt(time: Seconds, {flipsValues = false}: { flipsValues?: boolean } = {}): PendingValue {
         const {elapsed, flip} = this.iterationTimeAt(time);
-        const {duration} = this.timing;
-        const fraction = duration === 0 ? (elapsed >= 0 ? 1 : 0) : elapsed / duration;
+        const {iterationDuration} = this.timing;
+        const fraction = iterationDuration === 0 ? (elapsed >= 0 ? 1 : 0) : elapsed / iterationDuration;
         return this.valueAtFraction(flip ? 1 - fraction : fraction, flipsValues !== (flip === 'values'));
     }
 
@@ -255,8 +255,8 @@ export class TrackGroupBuilder extends TrackEntryBuilder {
             return this.iterationEndValueAt(index - 1, flipsValues);
         if (elapsed >= this.entriesEndIn(flip))
             return this.iterationEndValueAt(index, flipsValues);
-        const {start, duration} = this.timing;
-        return this.entriesValueAt(start + (flip ? duration - elapsed : elapsed), flipsValues !== (flip === 'values'));
+        const {start, iterationDuration} = this.timing;
+        return this.entriesValueAt(start + (flip ? iterationDuration - elapsed : elapsed), flipsValues !== (flip === 'values'));
     }
 
     build(): TrackGroup {
@@ -275,14 +275,14 @@ export class TrackGroupBuilder extends TrackEntryBuilder {
 
     /** How long after an iteration starts its entries start in it, when it flips as `flip` says. */
     private entriesStartIn(flip: Oscillation | undefined): Seconds {
-        const {start, duration} = this.timing;
-        return flip ? start + duration - this.entriesEnd : this.start - start;
+        const {start, iterationDuration} = this.timing;
+        return flip ? start + iterationDuration - this.entriesEnd : this.start - start;
     }
 
     /** How long after an iteration starts its entries end in it, when it flips as `flip` says. */
     private entriesEndIn(flip: Oscillation | undefined): Seconds {
-        const {start, duration} = this.timing;
-        return flip ? start + duration - this.start : this.entriesEnd - start;
+        const {start, iterationDuration} = this.timing;
+        return flip ? start + iterationDuration - this.start : this.entriesEnd - start;
     }
 
     /** The value its iteration at `index` ends on: what its entries show once they're all done, or, in a flipped iteration, before any of them starts. */
