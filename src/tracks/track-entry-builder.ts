@@ -1,10 +1,11 @@
 import type {CSSValue} from "../dom/mapping.ts";
 import type {Easing} from "../easing.ts";
+import type {Oscillation} from "../plan.ts";
 import type {TweenStops} from "../tween-stops.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import {clamp} from "../utils/math.ts";
-import {type Oscillation, repeatsForever, type TrackEntry, type TrackGroup, type TrackItem, type TrackStop, valueAtProgress} from "./track-entries.ts";
+import {repeatsForever, type TrackEntry, type TrackGroup, type TrackItem, type TrackStop, valueAtProgress} from "./track-entries.ts";
 import {type CurrentValueToken, currentValueToken, type InterpolationToken, type TrackValue} from "./track-values.ts";
 
 /** A missing value, until a value is assigned to it: every stop and token that has it then has that value. */

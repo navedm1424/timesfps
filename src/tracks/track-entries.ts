@@ -1,14 +1,9 @@
 import type {Easing} from "../easing.ts";
+import type {Oscillation} from "../plan.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {partitionPoint} from "../utils/collections.ts";
 import {clamp, invLerp} from "../utils/math.ts";
 import {type InterpolationToken, type TrackValue, valueBetween} from "./track-values.ts";
-
-/**
- * What every other iteration of an oscillating repeat flips: its time, so it plays backwards,
- * or its values, so it runs from the end values to the start ones with its easing forwards.
- */
-export type Oscillation = 'time' | 'values';
 
 /** When a run starts, how long each of its iterations lasts, and how it repeats; one without duration doesn't repeat. */
 export interface TrackEntry {

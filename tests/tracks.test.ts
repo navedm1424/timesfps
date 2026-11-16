@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {AnimationTiming} from "../src/animation-timing.ts";
 import {animation} from "../src/animation.ts";
-import {AnimationValues, resolveTargets} from "../src/dom/mapping.ts";
+import {type AnimationValues, resolveTargets} from "../src/dom/mapping.ts";
 import {CubicBezierEasing, type Easing, StepsEasing} from "../src/easing.ts";
 import {linear} from "../src/easing-specifier.ts";
 import {NumericStops} from "./numeric-stops.ts";
@@ -62,13 +62,16 @@ function sequencePlanOf(
     return plan(SequenceDefinition.of(timing, mappingOf(timing, undefined) as never), target => resolveTargets(target, scope));
 }
 
+/** How a sequence repeats, as a plan gives it; what's left out is as a sequence that doesn't repeat has it. */
+type SequenceRepeats = Partial<Pick<SequencePlan, 'repeatCount' | 'repeatDelay' | 'oscillate'>>;
+
 /** The plan with the sequence at each path in `repeatsByPath` repeating as given there; paths are within the plan. */
-function withRepeats(plan: SequencePlan, repeatsByPath: { [path: EntryPath]: RepeatOptions }, path?: EntryPath): SequencePlan {
+function withRepeats(plan: SequencePlan, repeatsByPath: { [path: EntryPath]: SequenceRepeats }, path?: EntryPath): SequencePlan {
     const entries = [...plan.entries].map(([name, entry]): [string, PlanNode] => {
         if (entry.type === 'animation')
             return [name, entry];
         const entryPath = naming.entryPathOf(path, name);
-        return [name, {...withRepeats(entry, repeatsByPath, entryPath), repeatOptions: repeatsByPath[entryPath] ?? {}}];
+        return [name, {...withRepeats(entry, repeatsByPath, entryPath), ...repeatsByPath[entryPath]}];
     });
     return {...plan, entries: new Map(entries)};
 }
@@ -81,7 +84,7 @@ function sequenceEndOf(
 ): Seconds {
     const measuring = SequenceTiming.builder().add(sequence, 'measured').add(AnimationTiming.of({duration: 1}), 'next', 'measured>').build();
     const inMeasured = <Value>(byPath: { [path: EntryPath]: Value }) => Object.fromEntries(Object.entries(byPath).map(([path, value]) => [naming.entryPathOf('measured', path), value]));
-    return sequencePlanOf(measuring, {...inMeasured(valuesByPath), next: line}, inMeasured(elementsByPath)).entries.get('next')!.position;
+    return sequencePlanOf(measuring, {...inMeasured(valuesByPath), next: line}, inMeasured(elementsByPath)).entries.get('next')!.start;
 }
 
 function animationTracksOf(timing: AnimationTiming, values: AnimationValues = line, elements = [element], resolver = numericResolver): AnimationTracks {
@@ -186,8 +189,8 @@ describe("plans", () => {
             .add(AnimationTiming.of({duration: 1}), 'next', 'a>')
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, next: line}, {a: threeElements});
-        expect(sequencePlan.entries.get('a')).toMatchObject({position: 0, iterationDuration: 1});
-        expect(sequencePlan.entries.get('next')).toMatchObject({position: 3.75});
+        expect(sequencePlan.entries.get('a')).toMatchObject({start: 0, iterationDuration: 1});
+        expect(sequencePlan.entries.get('next')).toMatchObject({start: 3.75});
     });
 
     it("counts only the first play of an infinite animation", () => {
@@ -197,12 +200,50 @@ describe("plans", () => {
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, next: line});
         expect(sequencePlan.entries.get('a')).toMatchObject({iterationDuration: 1});
-        expect(sequencePlan.entries.get('next')).toMatchObject({position: 1.5});
+        expect(sequencePlan.entries.get('next')).toMatchObject({start: 1.5});
     });
 
-    it("resolves the targets, and gives each its delay", () => {
+    it("resolves the targets, and starts the animation on each after its delay for it", () => {
         const timing = AnimationTiming.of({duration: 1}, {delay: index => index * 0.5});
-        expect(animationPlanOf(timing, threeElements).targets).toEqual(threeElements.map((target, index) => ({target, delay: index * 0.5})));
+        expect(animationPlanOf(timing, threeElements).targets).toEqual(threeElements.map((target, index) => ({target, start: index * 0.5})));
+    });
+
+    it("places an entry of a nested sequence after the outermost definition starts, and its targets after their delays too", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0.5)
+            .add(AnimationTiming.of({duration: 1}, {delay: 0.25}), 'b', 1)
+            .build();
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'x')
+            .add(s, 's')
+            .build();
+        const sequencePlan = sequencePlanOf(sequence, {x: line, 's>a': line, 's>b': line});
+        const nested = sequencePlan.entries.get('s') as SequencePlan;
+        expect(nested).toMatchObject({start: 2, iterationDuration: 2.25});
+        expect(nested.entries.get('a')).toMatchObject({start: 2.5, targets: [{target: element, start: 2.5}]});
+        expect(nested.entries.get('b')).toMatchObject({start: 3, targets: [{target: element, start: 3.25}]});
+    });
+
+    it("gives how an animation repeats: by its count, delay and oscillation, a reverse flipping its time and a mirror its values", () => {
+        const repeatsOf = (options: RepeatOptions) => {
+            const {repeatCount, repeatDelay, oscillate} = animationPlanOf(AnimationTiming.of({duration: 1}, options), [element]);
+            return {repeatCount, repeatDelay, oscillate};
+        };
+        expect(repeatsOf({})).toEqual({repeatCount: 0, repeatDelay: 0, oscillate: undefined});
+        expect(repeatsOf({repeat: 2, repeatDelay: 0.5})).toEqual({repeatCount: 2, repeatDelay: 0.5, oscillate: undefined});
+        expect(repeatsOf({repeat: Infinity, repeatMode: 'reverse'})).toEqual({repeatCount: Infinity, repeatDelay: 0, oscillate: 'time'});
+        expect(repeatsOf({repeat: 1, repeatDelay: 1, repeatMode: 'mirror'})).toEqual({repeatCount: 1, repeatDelay: 1, oscillate: 'values'});
+    });
+
+    it("doesn't repeat an animation without duration, nor a sequence", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 0}, {repeat: 2, repeatDelay: 0.5, repeatMode: 'mirror'}), 'a')
+            .build();
+        const sequencePlan = sequencePlanOf(sequence, {a: line});
+        expect(sequencePlan.entries.get('a')).toMatchObject({repeatCount: 0, repeatDelay: 0});
+        expect(sequencePlan.entries.get('a')).not.toHaveProperty('oscillate');
+        expect(sequencePlan).toMatchObject({repeatCount: 0, repeatDelay: 0});
+        expect(sequencePlan).not.toHaveProperty('oscillate');
     });
 
     it("refers to an entry's start before its delay, and ends a sequence with its latest entry", () => {
@@ -212,9 +253,9 @@ describe("plans", () => {
             .add(AnimationTiming.of({duration: 1}), 'c', 'b<+0')
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, b: line, c: line});
-        expect(sequencePlan.entries.get('b')).toMatchObject({position: 1.5});
-        expect(sequencePlan.entries.get('c')).toMatchObject({position: 1.5});
-        expect(sequencePlan).toMatchObject({position: 0, iterationDuration: 3.75});
+        expect(sequencePlan.entries.get('b')).toMatchObject({start: 1.5});
+        expect(sequencePlan.entries.get('c')).toMatchObject({start: 1.5});
+        expect(sequencePlan).toMatchObject({start: 0, iterationDuration: 3.75});
         expect(sequenceEndOf(sequence, {a: line, b: line, c: line})).toBe(3.75);
     });
 
@@ -225,8 +266,8 @@ describe("plans", () => {
             .add(AnimationTiming.of({duration: 2}), 'c', 'b>-=50%')
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, b: line, c: line});
-        expect(sequencePlan.entries.get('b')).toMatchObject({position: 1});
-        expect(sequencePlan.entries.get('c')).toMatchObject({position: 1});
+        expect(sequencePlan.entries.get('b')).toMatchObject({start: 1});
+        expect(sequencePlan.entries.get('c')).toMatchObject({start: 1});
     });
 
     it("keeps an entry with no targets at its position, taking no time there, however it repeats", () => {
@@ -237,9 +278,9 @@ describe("plans", () => {
             .add(AnimationTiming.of({duration: 1}), 'd', '>>+1')
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, b: line, c: line, d: line}, {b: [], d: []});
-        expect(sequencePlan.entries.get('b')).toMatchObject({targets: [], position: 3, iterationDuration: 0});
-        expect(sequencePlan.entries.get('c')).toMatchObject({position: 3});
-        expect(sequencePlan.entries.get('d')).toMatchObject({position: 5});
+        expect(sequencePlan.entries.get('b')).toMatchObject({targets: [], start: 3, iterationDuration: 0});
+        expect(sequencePlan.entries.get('c')).toMatchObject({start: 3});
+        expect(sequencePlan.entries.get('d')).toMatchObject({start: 5});
         expect(sequencePlan).toMatchObject({iterationDuration: 5});
         expect(sequenceEndOf(sequence, {a: line, b: line, c: line, d: line}, {b: [], d: []})).toBe(5);
     });
@@ -544,7 +585,7 @@ describe("NativeEffectsResolver missing values", () => {
 
 describe("NativeEffectsResolver repeating sequences", () => {
     const sample = (effects: readonly NativeAnimationEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
-    const effectsOf = (timing: SequenceTiming, repeatsByPath: { [path: EntryPath]: RepeatOptions }, valuesByPath: { [path: EntryPath]: AnimationValues }) =>
+    const effectsOf = (timing: SequenceTiming, repeatsByPath: { [path: EntryPath]: SequenceRepeats }, valuesByPath: { [path: EntryPath]: AnimationValues }) =>
         NativeEffectsResolver.resolve(new TracksResolver(withRepeats(sequencePlanOf(timing, valuesByPath), repeatsByPath), naming).resolve(), numericResolver).get(element)!.x!;
 
     it("merges a repeating sequence's entries into one entry that repeats as the sequence does, each end held until the next entry starts", () => {
@@ -552,7 +593,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 1}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
         expect(effects.map(effect => ({name: effect.name, ...timingOf(effect)})))
             .toEqual([{name: 's>a+s>b', delay: 0, duration: 2.5, iterations: 2, direction: 'normal', fill: 'both'}]);
         expect(sample(effects, [0.5, 1.25, 2, 3, 3.75, 4.5, 6])).toEqual(closeTo([[0.5, 1, 5.5, 0.5, 1, 5.5, 6]])[0]);
@@ -563,7 +604,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 1}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1, repeatMode: 'mirror'}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1, oscillate: 'values'}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
         expect(sample(effects, [0.5, 2, 3, 3.75, 4.5, 6])).toEqual(closeTo([[0.5, 5.5, 5.5, 1, 0.5, 0]])[0]);
     });
 
@@ -572,7 +613,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 2}), 'a', 0)
             .add(AnimationTiming.of({duration: 0.5}), 'b', 0.5)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
         expect(effects).toHaveLength(1);
         expect(sample(effects, [0.25, 0.75, 1.5, 2.25, 2.75, 3.5])).toEqual(closeTo([[0.125, 5.5, 0.75, 0.125, 5.5, 0.75]])[0]);
     });
@@ -582,7 +623,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 1}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {0: 5, 1: 6}}});
         expect(sample(effects, [0.5, 1.25, 3])).toEqual(closeTo([[2.5, 5, 2.5]])[0]);
     });
 
@@ -591,7 +632,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 2}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': {x: {1: 3}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': line, 's>b': {x: {1: 3}}});
         expect(sample(effects, [1.5, 3.5])).toEqual(closeTo([[1.75, 1.75]])[0]);
     });
 
@@ -600,7 +641,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 1}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {1: 6}}});
         expect(sample(effects, [0.5, 1.25, 2])).toEqual(closeTo([[0.125, 0.25, 3.125]])[0]);
     });
 
@@ -610,7 +651,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(s, 's', 0)
             .add(AnimationTiming.of({duration: 1}), 'n', 3)
             .build();
-        const effects = effectsOf(sequence, {s: {repeat: 1}}, {'s>a': {x: {0: 0}}, n: {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(sequence, {s: {repeatCount: 1}}, {'s>a': {x: {0: 0}}, n: {x: {0: 5, 1: 6}}});
         expect(effects.map(({name}) => name)).toEqual(['s>a', 'n']);
         expect(sample(effects, [0.5, 1.5, 2.5])).toEqual(closeTo([[2.5, 2.5, 5]])[0]);
     });
@@ -621,7 +662,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(t, 't', 0)
             .add(AnimationTiming.of({duration: 0.5}), 'b', 2.5)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}, 's>t': {repeat: 1, repeatMode: 'mirror'}}, {'s>t>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}, 's>t': {repeatCount: 1, oscillate: 'values'}}, {'s>t>a': line, 's>b': {x: {0: 5, 1: 6}}});
         expect(effects.map(effect => ({name: effect.name, ...timingOf(effect)})))
             .toEqual([{name: 's>t>a+s>b', delay: 0, duration: 3, iterations: 2, direction: 'normal', fill: 'both'}]);
         expect(sample(effects, [0.5, 1.25, 2.25, 2.75, 3.5, 4.25, 5.25, 5.75])).toEqual(closeTo([[0.5, 0.75, 0, 5.5, 0.5, 0.75, 0, 5.5]])[0]);
@@ -632,7 +673,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
         expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 's>a', iterations: Infinity}, {name: 's>a+s>b', iterations: 2}]);
         expect(sample(effects, [0.5, 1.5, 2.5, 3.5, 4.5, 5.25])).toEqual(closeTo([[0.5, 5.5, 0.5, 5.5, 0.5, 0.25]])[0]);
     });
@@ -643,7 +684,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(t, 't', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}, 's>t': {repeat: Infinity}}, {'s>t>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}, 's>t': {repeatCount: Infinity}}, {'s>t>a': line, 's>b': {x: {0: 5, 1: 6}}});
         expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 's>t>a', iterations: Infinity}, {name: 's>t>a+s>b', iterations: 2}]);
         expect(sample(effects, [0.5, 1.5, 2.5, 3.5, 4.5, 5.25])).toEqual(closeTo([[0.5, 5.5, 0.5, 5.5, 0.5, 0.25]])[0]);
     });
@@ -653,7 +694,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1)
             .build();
-        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: Infinity}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: Infinity}}, {'s>a': line, 's>b': {x: {0: 5, 1: 6}}});
         expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 's>a+s>b', iterations: Infinity}]);
         expect(sample(effects, [4.5, 5.5])).toEqual(closeTo([[0.5, 5.5]])[0]);
     });
@@ -667,7 +708,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 4}), 'e', 0)
             .add(s, 's', 0)
             .build();
-        const effects = effectsOf(sequence, {s: {repeat: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
+        const effects = effectsOf(sequence, {s: {repeatCount: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
         expect(effects.map(({name}) => name)).toEqual(['s>i', 's>a+s>i']);
         expect(keyframesOf(effects[0]!)).toEqual([[0, 6], [1, 10]]);
     });
@@ -681,7 +722,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 0.5}), 'e', 0)
             .add(s, 's', 0)
             .build();
-        const effects = effectsOf(sequence, {s: {repeat: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
+        const effects = effectsOf(sequence, {s: {repeatCount: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
         expect(effects.map(({name}) => name)).toEqual(['s>i', 's>a+s>i']);
         expect(keyframesOf(effects[0]!)).toEqual([[0, 6], [1, 10]]);
     });
@@ -692,7 +733,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(AnimationTiming.of({duration: 4}), 'x', 0)
             .add(s, 's', 1)
             .build();
-        const effects = effectsOf(sequence, {s: {repeat: 1}}, {x: {x: {0: 10, 1: 14}}, 's>a': line});
+        const effects = effectsOf(sequence, {s: {repeatCount: 1}}, {x: {x: {0: 10, 1: 14}}, 's>a': line});
         expect(effects.map(({name, iterations}) => ({name, iterations}))).toEqual([{name: 'x', iterations: 1}, {name: 's>a', iterations: 2}]);
         expect(sample(effects, [0.5, 1.25, 1.75, 2.5])).toEqual(closeTo([[10.5, 0.5, 0.5, 12.5]])[0]);
     });
@@ -703,7 +744,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(s, 's', 0)
             .add(AnimationTiming.of({duration: 1}), 'n', 2.5)
             .build();
-        const effects = effectsOf(sequence, {s: {repeat: 1}}, {'s>a': line, n: {x: {1: 5}}});
+        const effects = effectsOf(sequence, {s: {repeatCount: 1}}, {'s>a': line, n: {x: {1: 5}}});
         expect(keyframesOf(effects.at(-1)!)).toEqual([[0, 1], [1, 5]]);
     });
 
@@ -716,18 +757,18 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .add(s, 's', 0)
             .add(AnimationTiming.of({duration: 1}), 'n', 4)
             .build();
-        const effects = effectsOf(sequence, {s: {repeat: 2, repeatDelay: 1, repeatMode: 'reverse'}}, {'s>j': {x: {0: 2, 1: 3}}, 's>b': line, n: {x: {1: 5}}});
+        const effects = effectsOf(sequence, {s: {repeatCount: 2, repeatDelay: 1, oscillate: 'time'}}, {'s>j': {x: {0: 2, 1: 3}}, 's>b': line, n: {x: {1: 5}}});
         expect(keyframesOf(effects.at(-1)!)).toEqual([[0, 2], [1, 5]]);
     });
 });
 
 describe("TracksResolver", () => {
-    type EntryShape = Pick<TrackItem, 'type' | 'name' | 'start' | 'repeatCount' | 'holdsBefore' | 'holdsAfter'> & { entries?: EntryShape[] };
+    type EntryShape = Pick<TrackItem | TrackGroup, 'type' | 'name' | 'start' | 'repeatCount' | 'holdsBefore' | 'holdsAfter'> & { entries?: EntryShape[] };
     const shapeOf = (entry: TrackItem | TrackGroup): EntryShape => {
         const {type, name, start, repeatCount, holdsBefore, holdsAfter} = entry;
         return {type, name, start, repeatCount, holdsBefore, holdsAfter, ...(entry.type === 'group' && {entries: entry.entries.map(shapeOf)})};
     };
-    const trackOf = (timing: SequenceTiming, repeatsByPath: { [path: EntryPath]: RepeatOptions }, valuesByPath: { [path: EntryPath]: AnimationValues }): Track =>
+    const trackOf = (timing: SequenceTiming, repeatsByPath: { [path: EntryPath]: SequenceRepeats }, valuesByPath: { [path: EntryPath]: AnimationValues }): Track =>
         new TracksResolver(withRepeats(sequencePlanOf(timing, valuesByPath), repeatsByPath), naming).resolve().get(element)!.x!;
 
     it("keeps a repeating sequence as a group of its entries, a repeating sequence in it as a group too, each with its own repeats", () => {
@@ -736,7 +777,7 @@ describe("TracksResolver", () => {
             .add(t, 't', 0)
             .add(AnimationTiming.of({duration: 0.5}), 'b', 2.5)
             .build();
-        const track = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}, 's>t': {repeat: 1, repeatMode: 'mirror'}}, {'s>t>a': line, 's>b': line});
+        const track = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}, 's>t': {repeatCount: 1, oscillate: 'values'}}, {'s>t>a': line, 's>b': line});
         expect(track.map(shapeOf)).toEqual([{
             type: 'group', name: 's>t>a+s>b', start: 0, repeatCount: 1, holdsBefore: true, holdsAfter: true, entries: [
                 {
@@ -766,7 +807,7 @@ describe("TracksResolver", () => {
             .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1)
             .build();
-        const track = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': line});
+        const track = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': line, 's>b': line});
         expect(track.map(shapeOf)).toEqual([
             {type: 'item', name: 's>a', start: 0, repeatCount: Infinity, holdsBefore: false, holdsAfter: false},
             {
@@ -783,7 +824,7 @@ describe("TracksResolver", () => {
             .add(AnimationTiming.of({duration: 2}), 'a', 0)
             .add(AnimationTiming.of({duration: 0.5}), 'b', 0.5)
             .build();
-        const [group] = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': line, 's>b': line});
+        const [group] = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': line, 's>b': line});
         expect((group as TrackGroup).entries.map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
             {name: 's>a', holdsAfter: true},
             {name: 's>b', holdsAfter: false}
@@ -795,7 +836,7 @@ describe("TracksResolver", () => {
             .add(AnimationTiming.of({duration: 1}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
             .build();
-        const [group] = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeat: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {0: 5, 1: 6}}});
+        const [group] = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {0: 5, 1: 6}}});
         expect(((group as TrackGroup).entries[0] as TrackItem).stops).toEqual([{offset: 0, value: 0}, {offset: 1, value: 5}]);
     });
 });

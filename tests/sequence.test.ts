@@ -119,7 +119,7 @@ describe("positions", () => {
     const startsOf = (timing: SequenceTiming, names: string[]) => {
         const mapping = Object.fromEntries(names.map(name => [name, [element, {opacity: 1}]]));
         const sequencePlan = plan(SequenceDefinition.of(timing, mapping as never), target => resolveTargets(target, element));
-        return Object.fromEntries(names.map(name => [name, sequencePlan.entries.get(name)!.position]));
+        return Object.fromEntries(names.map(name => [name, sequencePlan.entries.get(name)!.start]));
     };
 
     it("places entries after the end of everything so far", () => {

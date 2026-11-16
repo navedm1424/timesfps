@@ -1,14 +1,13 @@
 import {type ByElementAndProperty, mapByElementAndProperty} from "../dom/mapping.ts";
 import type {Easing} from "../easing.ts";
 import type {EntryPath, Naming} from "../naming.ts";
-import type {RepeatOptions} from "../playback-options.ts";
 import type {TweenStops} from "../tween-stops.ts";
 import type {Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import type {AnimationPlan, PlanNode, SequencePlan} from "../plan.ts";
 import {TrackGroupBuilder, TrackItemBuilder, type TrackEntryBuilder} from "./track-entry-builder.ts";
 import {layer, resolveHolds} from "./track-layering.ts";
-import {type Oscillation, repeats, repeatsForever, type TrackEntry, type TrackGroup, type TrackItem} from "./track-entries.ts";
+import {repeats, repeatsForever, type TrackEntry, type TrackGroup, type TrackItem} from "./track-entries.ts";
 
 /** Its entries in the order they show over each other in: by when they start, then in the order they're declared; a group's continuations of what in it repeats forever come right under it. */
 export type Track = readonly (TrackItem | TrackGroup)[];
@@ -26,31 +25,31 @@ export class TracksResolver {
 
     /** Adds every animation leaf of the plan to its targets' track builders, then builds them. */
     resolve(): Tracks {
-        this.addNode(this.plan, 0);
+        this.addNode(this.plan);
         return mapByElementAndProperty(this.buildersByTarget, builder => builder.build());
     }
 
-    /** Adds an animation or a sequence, which starts at its position after the sequence it's in starts, at `sequenceStart`. */
-    private addNode(node: PlanNode, sequenceStart: Seconds, path?: EntryPath): void {
-        const start = sequenceStart + node.position;
+    /** Adds an animation or a sequence. */
+    private addNode(node: PlanNode, path?: EntryPath): void {
         if (node.type === 'sequence')
-            this.addSequence(node, start, path);
+            this.addSequence(node, path);
         else
-            this.addAnimation(node, start, path);
+            this.addAnimation(node, path);
     }
 
-    /** Adds its entries in their order, in a group of every track builder that runs as it does, `start` after the outermost definition starts. */
-    private addSequence({entries, iterationDuration, repeatOptions}: SequencePlan, start: Seconds, path?: EntryPath): void {
-        this.startGroup(trackEntryOf(start, iterationDuration, repeatOptions));
-        for (const [name, entryPlan] of entries)
-            this.addNode(entryPlan, start, this.naming.entryPathOf(path, name));
+    /** Adds its entries in their order, in a group of every track builder that runs as it does. */
+    private addSequence(sequence: SequencePlan, path?: EntryPath): void {
+        this.startGroup(trackEntryOf(sequence.start, sequence));
+        for (const [name, entryPlan] of sequence.entries)
+            this.addNode(entryPlan, this.naming.entryPathOf(path, name));
         this.endGroup();
     }
 
-    /** Adds a run of each property on each target, `start` and the target's delay after the outermost definition starts. */
-    private addAnimation({stopsByProperty, easing, iterationDuration, repeatOptions, targets}: AnimationPlan, start: Seconds, path?: EntryPath): void {
-        for (const {target, delay} of targets) {
-            const timing = trackEntryOf(start + delay, iterationDuration, repeatOptions);
+    /** Adds a run of each property on each target, from where it starts on the target. */
+    private addAnimation(animation: AnimationPlan, path?: EntryPath): void {
+        const {stopsByProperty, easing, targets} = animation;
+        for (const {target, start} of targets) {
+            const timing = trackEntryOf(start, animation);
             for (const [property, stops] of Object.entries(stopsByProperty))
                 this.trackBuilderOf(target, property).add({path, ...timing, easing, stops});
         }
@@ -99,11 +98,9 @@ interface TrackGroupEntry extends TrackEntry {
 /** Each repeating group's builder, with the builders under it that continue what in it repeats forever. */
 type ContinuationsByBuilder = Map<TrackEntryBuilder, readonly TrackEntryBuilder[]>;
 
-/** The run of what starts at `start` and repeats iterations of `duration` as `repeatOptions` say; one without duration doesn't repeat. */
-function trackEntryOf(start: Seconds, duration: Seconds, {repeat = 0, repeatDelay = 0, repeatMode = 'loop'}: RepeatOptions): TrackEntry {
-    if (duration === 0 || repeat === 0) return {start, duration, repeatCount: 0, repeatDelay: 0};
-    const oscillate: Oscillation | undefined = repeatMode === 'reverse' ? 'time' : repeatMode === 'mirror' ? 'values' : undefined;
-    return {start, duration, repeatCount: repeat, repeatDelay, ...(oscillate && {oscillate})};
+/** The run of what starts at `start` and repeats its iterations as the entry's plan says. */
+function trackEntryOf(start: Seconds, {iterationDuration, repeatCount, repeatDelay, oscillate}: PlanNode): TrackEntry {
+    return {start, duration: iterationDuration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
 }
 
 /**

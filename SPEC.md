@@ -639,7 +639,7 @@ Every error has the type of what went wrong:
 | `src/tween-stops.ts` | `TweenStops`: one property's stops, read from their forms and checked, with a stop at each end |
 | `src/animation.ts` | `animation` and `AnimationDefinition` |
 | `src/sequence.ts` | `sequence`, `SequenceDefinition`, `SequenceDefinitionBuilder`, its entries, `Definition` and `EntryPlacementOptions`, and making a sequence timing's entries' definitions from its mapping |
-| `src/plan.ts` | `plan`, through `AnimationPlanner` and `SequencePlanner`: the plan tree of positions and durations, with each animation's targets and their delays |
+| `src/plan.ts` | `plan`, through `AnimationPlanner` and `SequencePlanner`: the plan tree of starts, durations and repeats, with each animation's targets and where it starts on each, and `Oscillation` |
 | `src/animator.ts` | The `Animator` abstract class, which turns `animate`'s forms into a definition for the engine's `animateDefinition` |
 | `src/internals.ts` | The internals `site/` uses, which it imports as `timesfps/internals`; `tsconfig.json` leaves it out of the build |
 | `src/utils/validation.ts` | `checkNumber`, `checkPositive`, `requireNumber` and `requireProperty` |
@@ -648,7 +648,7 @@ Every error has the type of what went wrong:
 | `src/utils/records.ts` | Reading numeric-keyed records in order |
 | `src/utils/collections.ts` | `groupBy`, `getOrInsertComputed`, `partitionPoint` (binary search for the first item past a point) |
 | `src/tracks/track-values.ts` | `TrackValue`, and its value tokens `CurrentValueToken` and `InterpolationToken`: a track's values, given or left for the effects stage to work out, `currentValueToken` and `valueBetween` |
-| `src/tracks/track-entries.ts` | `TrackEntry`, with `repeats` and `repeatsForever`, `Oscillation`, `TrackStop` and `valueAtProgress`, and a track's entries, `TrackItem` and `TrackGroup`: an entry's run, its stops, and what the tracks stage gives |
+| `src/tracks/track-entries.ts` | `TrackEntry`, with `repeats` and `repeatsForever`, `TrackStop` and `valueAtProgress`, and a track's entries, `TrackItem` and `TrackGroup`: an entry's run, its stops, and what the tracks stage gives |
 | `src/tracks/track-entry-builder.ts` | `TrackEntryBuilder`, and the builders that extend it, `TrackItemBuilder` and `TrackGroupBuilder`: a track's entry built step by step, an item entry's run with placeholders for its missing values, or a repeating sequence's run with the builders of the entries in it, with its values at a time |
 | `src/tracks/missing-values.ts` | `resolveMissingValues`, through the internal `MissingValuesResolver`: the values the missing starts and ends of builders laid over each other take |
 | `src/tracks/track-layering.ts` | `layer`: the builders that show once laid over each other, with their missing values, through the internal `layOver`, which leaves out the builders that one laid over them covers, and `resolveHolds`: which of builders that show hold before and after them, the first one before them only with `firstHoldsBefore` |
@@ -673,10 +673,10 @@ Relative imports end in `.ts`, and `rewriteRelativeImportExtensions` makes the b
 new WAAPIAnimator({scope}).animate(definition)    scope: document.documentElement by default
 │
 ├─ 1. Plan         plan(definition, targetsResolver)  → AnimationPlan | SequencePlan tree
-│                  (targets resolved §5.1, positions and delays §5.3; values stay as given §5.2)
+│                  (targets resolved §5.1, starts, delays and repeats §5.3; values stay as given §5.2)
 ├─ 2. Tracks       new TracksResolver(plan, naming).resolve()  → Tracks: a Track per target and property (§5.4)
 │                  (entries layered, repeating sequences kept as groups; missing values from neighbours,
-│                   or described; repeats as runs; holds)
+│                   or described; holds)
 ├─ 3. Effects      NativeEffectsResolver.resolve(tracks, domValueResolver)
 │     ├─ a. timing   → PlacedEffect[]    (each entry as one run of clips, groups flattened; runs as iterations
 │     │                                    or keyframes, fill modes §5.5)
@@ -709,28 +709,32 @@ Reversed stops, holds, trimming and every repeat hold the same values, so the va
 
 ### 5.3 Plan
 
-`plan(definition, targetsResolver)` (`src/plan.ts`) places the definition in time, through the internal `AnimationPlanner` and `SequencePlanner`. It returns a tree with the definition's levels, an `AnimationPlan` for each animation and a `SequencePlan` for each sequence, holding what playing it needs. Times are local to the sequence an entry is in, or start at 0 for the outermost definition.
+`plan(definition, targetsResolver)` (`src/plan.ts`) places the definition in time, through the internal `AnimationPlanner` and `SequencePlanner`. It returns a tree with the definition's levels, an `AnimationPlan` for each animation and a `SequencePlan` for each sequence, holding what playing it needs. Positions are resolved within each sequence (§2.7), but every time the plan gives is after the outermost definition starts.
 
 | Field | Meaning |
 |---|---|
 | `type` | `'animation'` or `'sequence'` |
 | `stopsByProperty` | An animation's only: its definition's `TweenStops`, by property |
 | `entries` | A sequence's: each entry's node, by name, in order |
-| `position` | Where the entry starts in its sequence, before its delay; 0 for the outermost definition |
+| `start` | Where the entry starts, before its delay: its sequence's `start` plus its position, 0 for the outermost definition. What `<` refers to |
 | `iterationDuration` | One iteration of an animation, without delays or repeats. A sequence's runs from 0 to the latest end among its entries, gaps included |
 | `easing` | An animation's only: the easing its transition resolves to (§2.2) |
-| `repeatOptions` | How it repeats after its first iteration: an animation's from its timing. A sequence's is empty until sequences can repeat; tests set it to cover repeating sequences |
+| `repeatCount` | The iterations after the first, `Infinity` forever |
+| `repeatDelay` | How long it holds its end value before each repeat, in seconds |
+| `oscillate` | What every other iteration flips (`Oscillation`): `'time'`, so it plays backwards, or `'values'`, so it runs from the end values to the start ones with its easing forwards. Without it, every repeat starts over |
 
-Leaves also keep `targets`: each element as `target`, with its `delay`, the animation's own (its number, or its stagger at the element's index).
+Leaves also keep `targets` (`StaggeredTarget`): each element as `target`, with the `start` of the animation on it, the entry's `start` plus the animation's own delay for it (its number, or its stagger at the element's index).
+
+**Repeats** (`repeatsOf`). An animation's timing gives its `RepeatOptions`, which the planner turns into `repeatCount`, `repeatDelay` and `oscillate` once: `repeat` is the count, `reverse` flips `'time'`, `mirror` flips `'values'`, and `loop` has no `oscillate`. An animation without duration, which includes one without targets, or without repeats has a `repeatCount` and `repeatDelay` of 0 and no `oscillate`. A sequence doesn't repeat until sequences can; tests give repeating ones their repeats (§7).
 
 **Planning in steps.** Each planner plans one entry, once:
-1. `of(definition, targetsResolver)` takes everything that doesn't depend on where the entry sits. An `AnimationPlanner` resolves the targets, each target's own delay, the easing and the durations. A `SequencePlanner` plans its whole subtree, as below.
-2. `position(descriptor, entrySpans)` resolves the position among the entries before it, clamped to 0. A `=%` offset reads the planner's own anchor duration, which is already known.
-3. `plan()` gives the node.
+1. `of(definition, targetsResolver)` takes everything that doesn't depend on where the entry sits. An `AnimationPlanner` resolves the targets, each target's own delay, the easing, the durations and the repeats. A `SequencePlanner` makes and positions the planners of its whole subtree, as below.
+2. `position(descriptor, entrySpans)` resolves the position among the entries before it, within its sequence, clamped to 0. A `=%` offset reads the planner's own anchor duration, which is already known.
+3. `plan(sequenceStart)` gives the node, its `start` its position after `sequenceStart`, where its sequence starts (0 for the outermost definition). Where a sequence starts is only known once it's positioned in the one around it, which happens after its own `of`, so this is the step that turns positions into starts.
 
-The anchor duration (§2.7.2) stays in the planners: only placing the entries after an entry and working out its sequence's durations need it, and both happen while planning.
+The anchor duration (§2.7.2) stays in the planners: only placing the entries after an entry and working out its sequence's durations need it, and both happen while planning. It reads the timing's `RepeatOptions` as they are.
 
-`SequencePlanner.of` makes a planner for each entry, positions it, keeps its `span` for the positions after it, and plans it. A sequence's iteration duration and anchor duration are both the latest end among its entries.
+`SequencePlanner.of` makes a planner for each entry, positions it and keeps its `span` for the positions after it. A sequence's iteration duration and anchor duration are both the latest end among its entries. Its `plan(sequenceStart)` plans each entry from its own `start`.
 
 ### 5.4 Tracks
 
@@ -749,18 +753,13 @@ new TracksResolver(plan, naming).resolve()
 ```
 
 **1. Walk the plan.** Entries are added to their `TrackBuilder` in declaration order, which keeps them in that order. `TracksResolver` gives every `TrackBuilder` its `naming`.
-- **Runs.** The plan's `repeatOptions` become the tracks stage's own terms here, once (`trackEntryOf`), in a `TrackEntry` (`src/tracks/track-entries.ts`), the run every entry of a track has:
-  - `start`, after the outermost definition starts, and `duration`, one iteration;
-  - `repeatCount`: the iterations after the first, `Infinity` forever;
-  - `repeatDelay`: how long it holds its end value before each repeat, in seconds;
-  - `oscillate`: what every other iteration flips (`Oscillation`), `'time'` for `reverse` and `'values'` for `mirror`. Without it, every repeat starts over (`loop`);
-  - a run without duration, or without repeats, has a `repeatCount` and `repeatDelay` of 0 and no `oscillate`.
-- Each sequence gets a run:
-  - `start`: the start of the sequence around it plus its position, or its own position for the outermost;
-  - `duration`: one iteration of it, repeated as its plan's `repeatOptions` say.
+- **Runs.** A `TrackEntry` (`src/tracks/track-entries.ts`) is the run every entry of a track has. `trackEntryOf(start, node)` makes one from a start and a plan's repeats:
+  - `start`, after the outermost definition starts, and `duration`, one iteration (the plan's `iterationDuration`);
+  - `repeatCount`, `repeatDelay` and `oscillate`, as the plan gives them (§5.3).
+- Each sequence gets a run from its plan's `start`.
 - **Groups.** `addSequence` starts a group of the sequence's run in every track builder (`startGroup`), adds its entries, then ends the group (`endGroup`). The resolver keeps the runs of the groups started (`startedGroups`), and a track builder made while they are starts them too. So every track builder has a group of every sequence, whether or not anything in it is on its track.
 - Each leaf adds a `TrackItemEntry` per target and property, a `TrackEntry` with:
-  - `start`: its sequence's `start` (0 for an animation on its own) + its position + the target's delay;
+  - `start`: where the animation starts on the target, from the plan's `targets`;
   - `duration` and its repeats from its own plan, and its `easing` and `stops`;
   - `path`: its entry path (`naming.entryPathOf`).
 
@@ -979,6 +978,7 @@ For each target, property and effect, in order, the adapter calls `element.anima
 | Animations are unnamed; entries are named | The same animation can be placed many times |
 | Positions and references are local to each sequence | Entry names only need to be unique within their sequence |
 | The plan is resolved at adaptation | Staggers depend on the element count, which only the targets give, resolved in the scope |
+| The plan places the definition in time entirely: starts after the outermost definition starts, each target's delay added, and repeats as runs | The tracks stage only lays that out by target and property, and a timing's repeat options are read in one place |
 | Errors by kind: `RangeError`, `TypeError`, `SyntaxError`, `Error` | A caller can tell a bad number, a bad shape, a bad position and a bad state apart (§3.10) |
 | Track runs named by entry path | Definitions are reusable, so identity is the place in the tree, not the object |
 | Values resolved per target, through probes | Relative units depend on the element; probes are untouched by animations and give absolute values |
@@ -1005,7 +1005,7 @@ For each target, property and effect, in order, the adapter calls `element.anima
 
 It compares the result with the definitions' own math, sampled at times that miss round numbers, where steps and repeats jump. The definitions' math is: each iteration through the stops and easing, holds through repeat delays, `reverse` as time reversal, and `mirror` as `1 − progress` with the easing running forwards. Its interpolation of stops is `NumericStops` (`tests/numeric-stops.ts`), kept apart from the library's own.
 
-The cases cover single animations through every repeat, entries in sequences, and entries in repeating sequences, through plans whose sequences tests give `repeatOptions` (`withRepeats`). Easings are cubic Bézier (including overshoot), jump-start and jump-end steps, and springs. Plan, timing, fill, layering and missing-value cases are checked exactly. A builder holding after it ends when the one under its end never shows is checked on `layer` directly, since no definition lays builders in that order. The tracks themselves are checked on `TracksResolver` directly: groups kept with their own repeats, sequences that don't repeat laid out on the track around them, continuations, and the holds and missing values of a group's entries. The holds WAAPI can't play are checked on hand-made tracks, since the tracks stage never gives them.
+The cases cover single animations through every repeat, entries in sequences, and entries in repeating sequences, through plans whose sequences tests give repeats (`withRepeats`: `repeatCount`, `repeatDelay` and `oscillate`). Easings are cubic Bézier (including overshoot), jump-start and jump-end steps, and springs. Plan, timing, fill, layering and missing-value cases are checked exactly. A builder holding after it ends when the one under its end never shows is checked on `layer` directly, since no definition lays builders in that order. The tracks themselves are checked on `TracksResolver` directly: groups kept with their own repeats, sequences that don't repeat laid out on the track around them, continuations, and the holds and missing values of a group's entries. The holds WAAPI can't play are checked on hand-made tracks, since the tracks stage never gives them.
 
 `tests/animation.test.ts` covers timings: validation and clamping, telling transition kinds apart, splitting `AnimationTimingOptions`, the `DampedSpring` factories, and staggers. `tests/sequence.test.ts` covers positions (parsing, one offset of each kind in order, and resolving every reference and share), sequence timings, targets, tween stops (their forms, their checks and their ends), and definitions: values checked as they're made, naming, immutability, their entries, and private constructors.
 
