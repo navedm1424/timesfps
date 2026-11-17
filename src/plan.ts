@@ -1,37 +1,18 @@
 import type {AnimationDefinition} from "./animation.ts";
+import type {AnimationTiming} from "./animation-timing.ts";
 import {type EntrySpan, type PositionDescriptor, resolvePosition} from "./at.ts";
 import {type Target} from "./dom/mapping.ts";
 import type {Easing} from "./easing.ts";
-import type {RepeatOptions} from "./playback-options.ts";
+import type {RepeatDescriptor} from "./playback-options.ts";
 import {type Definition, SequenceDefinition, type SequenceDefinitionEntry} from "./sequence.ts";
-import {resolveTransition} from "./transition.ts";
 import type {TweenStops} from "./tween-stops.ts";
 import type {Seconds} from "./types.ts";
-
-/**
- * What every other iteration of an oscillating repeat flips: its time, so it plays backwards,
- * or its values, so it runs from the end values to the start ones with its easing forwards.
- */
-export type Oscillation = 'time' | 'values';
-
-/**
- * How an entry repeats after its first iteration: the plan's form of its repeat options, unlike a playback descriptor, which keeps them as repeat options.
- * One without duration doesn't repeat.
- */
-export interface RepeatDescriptor {
-    /** How many iterations follow its first; `Infinity` repeats forever. */
-    repeatCount: number;
-    /** How long it holds the value it ends on before each repeat. */
-    repeatDelay: Seconds;
-    /** Without it, every repeat starts over. */
-    oscillate?: Oscillation;
-}
 
 /** Times are after the outermost definition starts. */
 interface PlanBase extends RepeatDescriptor {
     /** Where it starts, before its delay; what `<` refers to. */
     start: Seconds;
-    /** How long one iteration of an animation, or a sequence, lasts, without delays or repeats; an animation with no targets takes no time. */
+    /** How long one iteration of an animation, or a sequence, lasts, without delays or repeats. */
     iterationDuration: Seconds;
 }
 
@@ -49,7 +30,7 @@ export interface AnimationPlan extends PlanBase {
     targets: readonly StaggeredTarget[];
 }
 
-/** It doesn't repeat until sequences can. */
+/** It doesn't repeat until sequences can, and has only the entries that play something. */
 export interface SequencePlan extends PlanBase {
     type: 'sequence';
     entries: ReadonlyMap<string, Plan>;
@@ -65,11 +46,11 @@ interface DelayedTarget {
     delay: Seconds;
 }
 
-/** Resolves the definition's targets, and places every entry, and every target of each, in time. */
-export function plan(definition: AnimationDefinition, resolveTargets: TargetsResolver): AnimationPlan;
-export function plan(definition: SequenceDefinition, resolveTargets: TargetsResolver): SequencePlan;
-export function plan(definition: Definition, resolveTargets: TargetsResolver): Plan;
-export function plan(definition: Definition, resolveTargets: TargetsResolver): Plan {
+/** Resolves the definition's targets, and places every entry, and every target of each, in time; `undefined` when none of it has targets, so it plays nothing. */
+export function plan(definition: AnimationDefinition, resolveTargets: TargetsResolver): AnimationPlan | undefined;
+export function plan(definition: SequenceDefinition, resolveTargets: TargetsResolver): SequencePlan | undefined;
+export function plan(definition: Definition, resolveTargets: TargetsResolver): Plan | undefined;
+export function plan(definition: Definition, resolveTargets: TargetsResolver): Plan | undefined {
     return definition instanceof SequenceDefinition
         ? SequencePlanner.of(definition, resolveTargets).plan(0)
         : AnimationPlanner.of(definition, resolveTargets).plan(0);
@@ -94,46 +75,44 @@ abstract class EntryPlanner {
         return {start: this.entryPosition, duration: this.spanDuration};
     }
 
-    /** Its plan, in the sequence it's in, which starts at `sequenceStart`. */
-    abstract plan(sequenceStart: Seconds): Plan;
+    /** Its plan, in the sequence it's in, which starts at `sequenceStart`; `undefined` when nothing in it has targets, though it still keeps its position for the entries after it. */
+    abstract plan(sequenceStart: Seconds): Plan | undefined;
 }
 
 class AnimationPlanner extends EntryPlanner {
     private constructor(
         private readonly stopsByProperty: { readonly [property: string]: TweenStops },
         private readonly targets: readonly DelayedTarget[],
-        private readonly iterationDuration: Seconds,
-        spanDuration: Seconds,
-        private readonly easing: Easing,
-        private readonly repeatDescriptor: RepeatDescriptor
+        private readonly timing: AnimationTiming,
+        spanDuration: Seconds
     ) {
         super(spanDuration);
     }
 
+    /** One without targets takes no time. */
     static of(definition: AnimationDefinition, resolveTargets: TargetsResolver): AnimationPlanner {
         const elements = resolveTargets(definition.target);
         const count = elements.length;
 
-        const {delay = 0, ...repeatOptions} = definition.timing.playback;
+        const {timing} = definition;
+        const {delay, duration, repeat} = timing;
         const targets = elements.map((target, index): DelayedTarget => ({target, delay: typeof delay === 'function' ? delay(index, count) : delay}));
+        const spanDuration = count ? Math.max(...targets.map(target => target.delay)) + iterationsSpanDuration(duration, repeat) : 0;
 
-        const {duration, easing} = resolveTransition(definition.timing.transition);
-        const iterationDuration = count ? duration : 0;
-        const spanDuration = count ? Math.max(...targets.map(target => target.delay)) + iterationsSpanDuration(iterationDuration, repeatOptions) : 0;
-
-        return new AnimationPlanner(definition.stopsByProperty, targets, iterationDuration, spanDuration, easing, repeatDescriptorOf(iterationDuration, repeatOptions));
+        return new AnimationPlanner(definition.stopsByProperty, targets, timing, spanDuration);
     }
 
-    plan(sequenceStart: Seconds): AnimationPlan {
+    plan(sequenceStart: Seconds): AnimationPlan | undefined {
+        if (this.targets.length === 0) return undefined;
         const start = sequenceStart + this.entryPosition;
         return {
             type: 'animation',
             stopsByProperty: this.stopsByProperty,
-            easing: this.easing,
+            easing: this.timing.easing,
             targets: this.targets.map(({target, delay}) => ({target, start: start + delay})),
             start,
-            iterationDuration: this.iterationDuration,
-            ...this.repeatDescriptor
+            iterationDuration: this.timing.duration,
+            ...this.timing.repeat
         };
     }
 }
@@ -161,12 +140,18 @@ class SequencePlanner extends EntryPlanner {
         return new SequencePlanner(entries, iterationDuration);
     }
 
-    /** Plans each entry in it, from where it starts. */
-    plan(sequenceStart: Seconds): SequencePlan {
+    /** Plans each entry in it, from where it starts, leaving out the ones that have no plan; `undefined` when none has one. */
+    plan(sequenceStart: Seconds): SequencePlan | undefined {
         const start = sequenceStart + this.entryPosition;
+        const entries = new Map<string, Plan>();
+        for (const [name, planner] of this.entries) {
+            const entryPlan = planner.plan(start);
+            if (entryPlan) entries.set(name, entryPlan);
+        }
+        if (entries.size === 0) return undefined;
         return {
             type: 'sequence',
-            entries: new Map([...this.entries].map(([name, planner]) => [name, planner.plan(start)])),
+            entries,
             start,
             iterationDuration: this.iterationDuration,
             repeatCount: 0,
@@ -179,15 +164,8 @@ function entryPlannerOf(entry: SequenceDefinitionEntry, resolveTargets: TargetsR
     return 'sequence' in entry ? SequencePlanner.of(entry.sequence, resolveTargets) : AnimationPlanner.of(entry.animation, resolveTargets);
 }
 
-/** How an entry with iterations of `iterationDuration` repeats, as `repeatOptions` say; one without duration or repeats doesn't repeat at all. */
-function repeatDescriptorOf(iterationDuration: Seconds, {repeat = 0, repeatDelay = 0, repeatMode = 'loop'}: RepeatOptions): RepeatDescriptor {
-    if (iterationDuration === 0 || repeat === 0) return {repeatCount: 0, repeatDelay: 0};
-    const oscillate: Oscillation | undefined = repeatMode === 'reverse' ? 'time' : repeatMode === 'mirror' ? 'values' : undefined;
-    return {repeatCount: repeat, repeatDelay, ...(oscillate && {oscillate})};
-}
-
 /** The iterations and their repeat delays; only the first iteration when it repeats forever. */
-function iterationsSpanDuration(iterationDuration: Seconds, {repeat = 0, repeatDelay = 0}: RepeatOptions): Seconds {
-    if (repeat === Infinity) return iterationDuration;
-    return iterationDuration * (repeat + 1) + repeatDelay * repeat;
+function iterationsSpanDuration(iterationDuration: Seconds, {repeatCount, repeatDelay}: RepeatDescriptor): Seconds {
+    if (repeatCount === Infinity) return iterationDuration;
+    return iterationDuration * (repeatCount + 1) + repeatDelay * repeatCount;
 }

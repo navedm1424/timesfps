@@ -1,8 +1,9 @@
 import {PRECISION} from "./constants.ts";
 import {DampedSpring} from "./damped-spring.ts";
 import {type Easing, SpringEasing} from "./easing.ts";
-import {checkEasingSpecifier, type EasingSpecifier, linear, resolveEasing} from "./easing-specifier.ts";
+import {checkEasingSpecifier, type EasingSpecifier, resolveEasing} from "./easing-specifier.ts";
 import type {Progress, Seconds} from "./types.ts";
+import {LeastRecentlyUsedCache} from "./utils/collections.ts";
 import {checkNumber, checkPositive, requireNumber, requireProperty} from "./utils/validation.ts";
 
 type ElementOf<A extends readonly string[]> = A extends readonly (infer ArrayElement)[] ? ArrayElement : never;
@@ -135,31 +136,58 @@ export interface TransitionDescriptor {
     easing: Easing;
 }
 
-const resolvedTransitions = new WeakMap<TransitionOptions, TransitionDescriptor>();
+/** A transition with its kind and every default filled in, so equal ones look alike. */
+type FilledTransition =
+    | { kind: 'eased'; duration: Seconds; easing: EasingSpecifier }
+    | { kind: 'physicalSpring'; stiffness: number; damping: number; mass: number; velocity: number; restDelta: Progress }
+    | { kind: 'visualSpring'; visualDuration: Seconds; bounce: number; velocity: number }
+    | { kind: 'durationSpring'; duration: Seconds; bounce: number; velocity: number };
 
-/** How long one iteration of the transition lasts, and the easing it runs; each transition is resolved once. */
-export function resolveTransition(transition: TransitionOptions): TransitionDescriptor {
-    let resolved = resolvedTransitions.get(transition);
-    if (!resolved) resolvedTransitions.set(transition, resolved = resolvedTransitionOf(transition));
-    return resolved;
-}
-
-function resolvedTransitionOf(transition: TransitionOptions): TransitionDescriptor {
+function filledTransitionOf(transition: TransitionOptions): FilledTransition {
     switch (transitionKindOf(transition)) {
         case 'eased': {
-            const {duration, easing} = transition as EasedTransitionOptions;
-            return {duration, easing: easing ? resolveEasing(easing) : linear};
+            const {duration, easing = 'linear'} = transition as EasedTransitionOptions;
+            return {kind: 'eased', duration, easing};
         }
         case 'physicalSpring': {
             const {stiffness, damping, mass = 1, velocity = 0, restDelta = PRECISION} = transition as PhysicalSpringTransitionOptions;
-            return transitionDescriptorOf(DampedSpring.physical(stiffness, damping, mass, velocity), restDelta);
+            return {kind: 'physicalSpring', stiffness, damping, mass, velocity, restDelta};
         }
         case 'visualSpring': {
             const {visualDuration, bounce, velocity = 0} = transition as VisualSpringTransitionOptions;
-            return transitionDescriptorOf(DampedSpring.visual(visualDuration, bounce, velocity), PRECISION);
+            return {kind: 'visualSpring', visualDuration, bounce, velocity};
         }
         case 'durationSpring': {
             const {duration, bounce, velocity = 0} = transition as DurationSpringTransitionOptions;
+            return {kind: 'durationSpring', duration, bounce, velocity};
+        }
+    }
+}
+
+/** How many resolved transitions are kept; velocities that come from gestures would otherwise add one each, forever. */
+const maxResolvedTransitions = 64;
+const resolvedTransitions = new LeastRecentlyUsedCache<string, TransitionDescriptor>(maxResolvedTransitions);
+
+/** How long one iteration of the transition lasts, and the easing it runs; equal transitions resolved recently share one descriptor, and so one easing. */
+export function resolveTransition(transition: TransitionOptions): TransitionDescriptor {
+    const filled = filledTransitionOf(transition);
+    return resolvedTransitions.getOrInsertComputed(JSON.stringify(filled), () => resolvedTransitionOf(filled));
+}
+
+function resolvedTransitionOf(transition: FilledTransition): TransitionDescriptor {
+    switch (transition.kind) {
+        case 'eased':
+            return {duration: transition.duration, easing: resolveEasing(transition.easing)};
+        case 'physicalSpring': {
+            const {stiffness, damping, mass, velocity, restDelta} = transition;
+            return transitionDescriptorOf(DampedSpring.physical(stiffness, damping, mass, velocity), restDelta);
+        }
+        case 'visualSpring': {
+            const {visualDuration, bounce, velocity} = transition;
+            return transitionDescriptorOf(DampedSpring.visual(visualDuration, bounce, velocity), PRECISION);
+        }
+        case 'durationSpring': {
+            const {duration, bounce, velocity} = transition;
             return {duration, easing: new SpringEasing(DampedSpring.restingAt(duration, bounce, velocity, PRECISION), duration)};
         }
     }

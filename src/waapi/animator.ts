@@ -16,7 +16,8 @@ export function animator(options: AnimatorOptions = {}): Animator {
 
 /**
  * Plays definitions on elements with WAAPI.
- * It plans the definition, resolving its targets, builds the plan's tracks, turns them into WAAPI effects, and creates an animation for each effect.
+ * It plans the definition, resolving its targets, builds the plan's tracks, turns them into WAAPI effects, and creates an animation for each effect;
+ * a definition with no targets plays nothing.
  */
 export class WAAPIAnimator extends Animator {
     readonly #options: AnimatorOptions;
@@ -35,7 +36,9 @@ export class WAAPIAnimator extends Animator {
             if (!targets) targetsByTarget.set(target, targets = resolveTargets(target, scope));
             return targets;
         }
-        const tracks = NativeEffectsResolver.resolve(new TracksResolver(plan(definition, targetsResolver), naming).resolve(), domValueResolver);
+        const definitionPlan = plan(definition, targetsResolver);
+        if (!definitionPlan) return new AnimationControls([]);
+        const tracks = NativeEffectsResolver.resolve(new TracksResolver(definitionPlan, naming).resolve(), domValueResolver);
         return new AnimationControls(WAAPIAnimator.nativeAnimationsOf(tracks));
     }
 

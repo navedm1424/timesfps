@@ -20,16 +20,40 @@ export interface PlaybackOptions extends RepeatOptions {
     delay?: Seconds | Stagger;
 }
 
-/** The options as a timing keeps them: clamped, with a stagger checked by `checkedStaggerOf`. */
-export interface PlaybackDescriptor extends RepeatOptions {
-    delay?: Seconds | Stagger;
+/**
+ * What every other iteration of an oscillating repeat flips: its time, so it plays backwards,
+ * or its values, so it runs from the end values to the start ones with its easing forwards.
+ */
+export type Oscillation = 'time' | 'values';
+
+/**
+ * How a timing repeats after its first iteration: its repeat options as plays read them.
+ * One without duration doesn't repeat.
+ */
+export interface RepeatDescriptor {
+    /** How many iterations follow its first; `Infinity` repeats forever. */
+    repeatCount: number;
+    /** How long it holds the value it ends on before each repeat. */
+    repeatDelay: Seconds;
+    /** Without it, every repeat starts over. */
+    oscillate?: Oscillation;
 }
 
 const repeatModes: readonly RepeatMode[] = ['loop', 'reverse', 'mirror'];
 
 /** Delays and repeat delays must be finite, the repeat count a number, and the repeat mode a known one; `label` names the timing in messages. */
 export function checkPlaybackOptions(options: PlaybackOptions, label: string): void {
-    if (typeof options.delay === 'number') checkNumber(options.delay, `${label}'s delay`);
+    checkDelay(options.delay, label);
+    checkRepeatOptions(options, label);
+}
+
+/** A number delay must be finite; a stagger's delays are checked as it gives them (`checkedStaggerOf`). `label` names the timing in messages. */
+export function checkDelay(delay: Seconds | Stagger | undefined, label: string): void {
+    if (typeof delay === 'number') checkNumber(delay, `${label}'s delay`);
+}
+
+/** The repeat delay must be finite, the repeat count a number, and the repeat mode a known one; `label` names the timing in messages. */
+export function checkRepeatOptions(options: RepeatOptions, label: string): void {
     checkNumber(options.repeatDelay, `${label}'s repeat delay`);
     checkNumber(options.repeat, `${label}'s repeat count`, {allowInfinity: true});
     if (options.repeatMode !== undefined && !repeatModes.includes(options.repeatMode))
@@ -57,8 +81,15 @@ export function checkedStaggerOf(stagger: Stagger): Stagger {
     return stagger.from === undefined ? checked : Object.assign(checked, {from: stagger.from});
 }
 
-/** The options clamped, with a staggered delay checked. */
-export function playbackDescriptorOf(options: PlaybackOptions): PlaybackDescriptor {
-    const {delay, ...clampedOptions} = clampedDelay(clampedRepeats(options));
-    return {...clampedOptions, ...(delay !== undefined && {delay: typeof delay === 'number' ? delay : checkedStaggerOf(delay)})};
+/** The delay a timing keeps: 0 without one, a negative one 0, and a stagger checked by `checkedStaggerOf`. */
+export function resolveDelay(delay: Seconds | Stagger = 0): Seconds | Stagger {
+    return typeof delay === 'number' ? Math.max(0, delay) : checkedStaggerOf(delay);
+}
+
+/** How a timing whose iterations last `iterationDuration` repeats, as its clamped `options` say; one without duration or repeats doesn't repeat at all. */
+export function repeatDescriptorOf(iterationDuration: Seconds, options: RepeatOptions): RepeatDescriptor {
+    const {repeat = 0, repeatDelay = 0, repeatMode = 'loop'} = clampedRepeats(options);
+    if (iterationDuration === 0 || repeat === 0) return {repeatCount: 0, repeatDelay: 0};
+    const oscillate: Oscillation | undefined = repeatMode === 'reverse' ? 'time' : repeatMode === 'mirror' ? 'values' : undefined;
+    return {repeatCount: repeat, repeatDelay, ...(oscillate && {oscillate})};
 }

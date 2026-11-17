@@ -1,5 +1,5 @@
 import type {Easing} from "../easing.ts";
-import type {RepeatDescriptor} from "../plan.ts";
+import type {RepeatDescriptor} from "../playback-options.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {partitionPoint} from "../utils/collections.ts";
 import {clamp, invLerp} from "../utils/math.ts";

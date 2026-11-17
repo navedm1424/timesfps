@@ -30,3 +30,19 @@ export function partitionPoint<Item>(items: readonly Item[], isPast: (item: Item
     }
     return low;
 }
+
+/** A map that keeps at most `capacity` entries, forgetting the least recently used one to make room for a new one. */
+export class LeastRecentlyUsedCache<Key, Value> {
+    private readonly entries = new Map<Key, Value>();
+
+    constructor(private readonly capacity: number) {}
+
+    /** The value for `key`, made by `createValue()` first when it has none; either way, it becomes the most recently used. */
+    getOrInsertComputed(key: Key, createValue: () => Value): Value {
+        const value = this.entries.has(key) ? this.entries.get(key)! : createValue();
+        this.entries.delete(key);
+        this.entries.set(key, value);
+        if (this.entries.size > this.capacity) this.entries.delete(this.entries.keys().next().value!);
+        return value;
+    }
+}

@@ -95,7 +95,7 @@ type SpringTransitionOptions =
 | `restDelta` | Strictly between 0 and 1. |
 | `easing` | As in §2.3, through `checkEasingSpecifier`. |
 
-**Resolution** (`resolveTransition`) gives a `TransitionDescriptor`, `{duration, easing}`: the iteration's duration and its `Easing`, which depends on the kind. A spring's comes from `transitionDescriptorOf(spring, restDelta)`, which runs it until it rests. The plan calls it as a definition plays (§5.3), not the timing. Each transition is resolved once and the result kept, so a timing shares one easing every time it's played, and the spring fits cached on it. The spring math behind a spring's easing belongs to the springs themselves (§4):
+**Resolution** (`resolveTransition`) gives a `TransitionDescriptor`, `{duration, easing}`: the iteration's duration and its `Easing`, which depends on the kind. A spring's comes from `transitionDescriptorOf(spring, restDelta)`, which runs it until it rests. A timing resolves its transition as it's made (§2.6), so planning does none of it. The spring math behind a spring's easing belongs to the springs themselves (§4):
 - **Eased:** the duration as given, and `resolveEasing(easing)`, or `linear` without one.
 - **Springs:** the duration below, and a `SpringEasing` over it:
 
@@ -106,6 +106,8 @@ type SpringTransitionOptions =
 | Duration | solved so it rests within `PRECISION` exactly at `duration` | from `bounce` | `duration` as given |
 
 - **`bounce` to ζ,** as Apple's springs do: `bounce ≥ 0 ? 1 − bounce : 1 / (1 + bounce)`.
+- **Equal transitions share one descriptor.** `resolveTransition` keys what it resolves by value: `filledTransitionOf` gives the transition's kind and every field with its default filled in (`mass` 1, `velocity` 0, `restDelta` `PRECISION`, `easing` `'linear'`), and its JSON is the key. So two timings with equal transitions, however they were written, share one easing and one spring, which spares the spring math and lets the spring fits cached per spring (§5.7) serve both. Equal springs given in different kinds aren't shared: they'd need to resolve to exactly the same numbers.
+- **The cache is bounded.** It's a `LeastRecentlyUsedCache` (`src/utils/collections.ts`) of the 64 most recently resolved transitions (`maxResolvedTransitions`), so velocities that come from gestures, each a new key, don't grow it forever.
 - **Spring quantities are in progress units.** `velocity` is progress per second, and `restDelta` is a `Progress`, defaulting to `PRECISION`. This is sound because a spring's motion is linear in its distance: a spring from 0 to 1 is a scaled copy of the same spring between any two values.
 
 ### 2.3 Easings
@@ -170,13 +172,17 @@ interface PlaybackOptions extends RepeatOptions {
     delay?: Seconds | Stagger;  // before the first iteration; not repeated
 }
 
-interface PlaybackDescriptor extends RepeatOptions {
-    delay?: Seconds | Stagger;  // a stagger checked by checkedStaggerOf
+type Oscillation = 'time' | 'values';
+
+interface RepeatDescriptor {
+    repeatCount: number;        // iterations after the first; Infinity forever
+    repeatDelay: Seconds;       // held before each repeat
+    oscillate?: Oscillation;    // what every other iteration flips; none starts each repeat over
 }
 ```
 
 - **Animations take them.** Sequences have no playback options (§8).
-- **What a timing keeps** is a `PlaybackDescriptor`, in its `playback` field: the options clamped, with a stagger wrapped by `checkedStaggerOf` (§2.5).
+- **What a timing keeps** (§2.6) is its `delay`, from `resolveDelay`, and its `repeat`, a `RepeatDescriptor` from `repeatDescriptorOf`.
 
 | Option | Default | Rule |
 |---|---|---|
@@ -192,8 +198,10 @@ interface PlaybackDescriptor extends RepeatOptions {
 | `mirror` | Flips the progress (`1 − progress`) and keeps the easing running forwards. This usually suits springs, because a spring played backwards starts wobbly and ends calm. |
 
 - **`Infinity`** is a valid `repeat`.
-- **Checks and clamping** are `checkPlaybackOptions`, `clampedDelay` and `clampedRepeats` (`src/playback-options.ts`). `NaN` and infinite times throw through `checkNumber` (`src/utils/validation.ts`).
-- **Collecting the options.** `AnimationTiming`'s constructor checks the options with `checkPlaybackOptions`, then keeps `playbackDescriptorOf(options)`, which clamps them and wraps a stagger `delay` with `checkedStaggerOf`.
+- **Checks** (`src/playback-options.ts`): `checkDelay` and `checkRepeatOptions`, which `checkPlaybackOptions` runs together. `NaN` and infinite times throw through `checkNumber` (`src/utils/validation.ts`).
+- **The delay a timing keeps** is `resolveDelay(delay)`: 0 without one, a negative number 0, and a stagger wrapped by `checkedStaggerOf` (§2.5).
+- **The repeats a timing keeps** are `repeatDescriptorOf(iterationDuration, options)`, read from the options once `clampedRepeats` has clamped them: `repeat` is the count, `reverse` flips `'time'`, `mirror` flips `'values'`, and `loop` has no `oscillate`. A timing without duration, or without repeats, gets a `repeatCount` and `repeatDelay` of 0 and no `oscillate`.
+- **`clampedDelay` and `clampedRepeats`** clamp an options object as it is. `TimedTweenTiming` uses them directly (§2.6).
 
 ### 2.5 Staggers
 
@@ -220,7 +228,7 @@ A stagger is a `delay` given as a function of each element's index. `Stagger` is
 
 **`stagger()` keeps its origin** on the function it returns, as `from` (`'first'` when none is given).
 
-**`checkedStaggerOf(stagger)`** (`src/playback-options.ts`) wraps a stagger so each delay that's `NaN` or infinite throws (`The staggered delay of element <index> …`), and a negative one becomes 0. The wrapper keeps the stagger's `from`. Timings keep their stagger wrapped this way, in their `PlaybackDescriptor` (§2.4). The plan calls it with each element's index and the element count.
+**`checkedStaggerOf(stagger)`** (`src/playback-options.ts`) wraps a stagger so each delay that's `NaN` or infinite throws (`The staggered delay of element <index> …`), and a negative one becomes 0. The wrapper keeps the stagger's `from`. Timings keep their stagger wrapped this way, as their `delay` (§2.4). The plan calls it with each element's index and the element count.
 
 | Term | Value |
 |---|---|
@@ -259,16 +267,19 @@ class AnimationTiming {
     static of(timing: AnimationTimingOptions): AnimationTiming;
     static of(transition: TransitionOptions, options?: PlaybackOptions): AnimationTiming;
 
-    readonly transition: TransitionOptions;
-    readonly playback: PlaybackDescriptor;  // clamped, with a stagger wrapped
+    readonly duration: Seconds;          // one iteration, without delays or repeats
+    readonly easing: Easing;             // the easing one iteration runs
+    readonly delay: Seconds | Stagger;   // clamped, with a stagger wrapped
+    readonly repeat: RepeatDescriptor;
 }
 
 type AnimationTimingOptions = TransitionOptions & PlaybackOptions;
 ```
 
 - **One run through the transition,** with its delay and repeats (`src/animation-timing.ts`).
-- **`of` is the only way to make one.** The constructor is private, and validates the transition and options, and keeps the options as a `PlaybackDescriptor` (§2.4).
-- **A timing validates and stores.** It keeps the transition as given and never resolves it: its duration and easing come from `resolveTransition` (§2.2).
+- **`of` is the only way to make one.** The constructor is private. It validates the transition and options, then resolves them.
+- **A timing resolves as it's made.** Its `duration` and `easing` come from `resolveTransition` (§2.2), its `delay` from `resolveDelay`, and its `repeat` from `repeatDescriptorOf` with its duration (§2.4). It keeps none of the options as given, so planning only reads what it resolved.
+- **Its fields are public.** The types they show, `Easing` and `RepeatDescriptor`, aren't exported from the package.
 - **`AnimationTimingOptions`** is a transition with the playback options spread into it. `of` splits its first argument by key into the transition options and the playback options (`delay`, `repeat`, `repeatDelay`, `repeatMode`), and the `options` given override the ones split out. The two key sets never overlap, so a transition on its own splits into itself, and both overloads share one implementation.
 - **Wherever a timing is taken,** an `AnimationTiming` is used as it is, and `AnimationTimingOptions` go through `of` there.
 - **Timings have no name.** They get one when they're placed in a sequence, so the same timing can be placed many times.
@@ -390,7 +401,7 @@ Times are local to the sequence an entry is in.
 | Term | Meaning |
 |---|---|
 | **Start** | The entry's position, before its delay. References to an entry's start resolve to it. |
-| **Span duration** | From the start to where the entry ends. An infinite repeat counts only its first iteration, since infinity can't be referred to. An entry with no elements has 0.<br>• **An animation's:** its latest staggered delay, then its iterations and their repeat delays.<br>• **A sequence's:** until the latest end among its entries. |
+| **Span duration** | From the start to where the entry ends. An infinite repeat counts only its first iteration, since infinity can't be referred to. An entry with no elements has 0.<br>• **An animation's:** its latest staggered delay, then its iterations and their repeat delays, as its `RepeatDescriptor` gives them, so one without duration counts no repeat delays.<br>• **A sequence's:** until the latest end among its entries. |
 | **End** | The start plus the span duration. References to an entry's end resolve to it. |
 | **Duration** | For positions, an entry's `EntrySpan` runs from its start for its span duration. The inserted entry's doesn't depend on its position, so it's known before the entry is placed. |
 | **Previous entry** | The entry added just before. For the first entry, it's the start of the sequence, with a duration of 0. |
@@ -561,7 +572,7 @@ abstract class Animator {
 - **An animator animates in one scope** (`src/animator.ts`). `animator` gives a `WAAPIAnimator` (`src/waapi/animator.ts`), which extends `Animator`. Other engines would extend it too.
 - **`animator` lives with `WAAPIAnimator`,** not in `src/animator.ts`. There, it would make `src/animator.ts` import the subclass, and the subclass would be evaluated before the class it extends exists. The scope defaults to `document.documentElement` at each `animate`, not when the animator is made, so an animator can be made where there's no document.
 - **`animate`'s three forms.** The first two take what `animation()` and `sequence(timing, mapping)` take, and make the definition with them, so their checks throw at `animate`. A definition is played as it is. `Animator.animate` tells them apart by the first argument: an `AnimationDefinition` or `SequenceDefinition`, a `SequenceTiming` (through `SequenceDefinition.of`), or else a target, which can never be any of these. It passes the definition to `animateDefinition`, the one method each engine implements.
-- **Each `animate`** plans the definition, which resolves its targets in the scope, then resolves the tracks, with their values per element, and calls `element.animate()` for each effect (§5).
+- **Each `animate`** plans the definition, which resolves its targets in the scope, then resolves the tracks, with their values per element, and calls `element.animate()` for each effect (§5). A definition with no plan, because nothing in it has targets, gives controls over no animations.
 - **What a definition holds:** an `AnimationDefinition` its `timing` (an `AnimationTiming`), `target` and `stopsByProperty` (a `TweenStops` per property, §3.4); a `SequenceDefinition` its `entries` and its `timing` (a `SequenceTiming`).
 - **`SequenceDefinitionEntries`** (`src/sequence.ts`) are one ordered array, in the order of the timing's entries, as `SequenceTimingEntries` are (§2.7). Each is `{name, animation}` (`AnimationDefinitionEntry`, with an `AnimationDefinition`) or `{name, sequence}` (`SubsequenceDefinitionEntry`, with a `SequenceDefinition`), so every leaf is an `AnimationDefinition`. Positions stay in the timing.
 - **Definitions expose nothing.** Their fields are `@internal`, and so is `AnimationDefinition`'s constructor; `SequenceDefinition`'s is private (§3.5). Besides `SequenceDefinition.of`, they have no methods: animators read their fields.
@@ -602,7 +613,7 @@ abstract class Animator {
 | Definitions and controls (types) | `AnimationDefinition`, `SequenceDefinition`, `Definition`, `SequenceDefinitionBuilder`, `SequenceTimingBuilder`, `Animator`, `AnimatorOptions`, `AnimationControls` |
 | Targets and values | `Target`, `CSSSelector`, `CSSValue`, `RawTweenStops`, `AnimationValues` |
 | Placement and mappings | `EntryPlacementOptions`, `AnimationMapping`, `SequenceMapping` |
-| Timing | `AnimationTimingOptions`, `PlaybackOptions`, `PlaybackDescriptor`, `RepeatOptions`, `RepeatMode`, `Stagger`, `StaggerSpacing`, `StaggerOptions`, `StaggerOrigin` |
+| Timing | `AnimationTimingOptions`, `PlaybackOptions`, `RepeatOptions`, `RepeatMode`, `Stagger`, `StaggerSpacing`, `StaggerOptions`, `StaggerOrigin` |
 | Sequence entries and positions | `SequenceTimingEntries`, `SequenceTimingEntry`, `AnimationTimingEntry`, `SubsequenceTimingEntry`, `At`, `PositionDescriptor`, `PositionReference`, `PositionAnchor`, `PositionOffset` |
 | Transitions | `TransitionOptions`, `EasedTransitionOptions`, `SpringTransitionOptions`, `DurationSpringTransitionOptions`, `VisualSpringTransitionOptions`, `PhysicalSpringTransitionOptions` |
 | Easings | `EasingSpecifier`, `EasingPreset`, `CubicBezierEasingParams`, `StepsEasingParams`, `StepPosition` |
@@ -629,10 +640,10 @@ Every error has the type of what went wrong:
 | `src/easing.ts` | The windowed easing classes, their params types (`CubicBezierEasingParams`, `StepsEasingParams`, `StepPosition`), and the checks of their params |
 | `src/cubic-bezier.ts` | Cubic Bézier math: coordinates, inverses, turning points, inflections, splitting |
 | `src/damped-spring.ts` | Closed-form damped springs in each damping regime: positions, turning times, rest time, and the factories each spring kind is made with: `physical`, `visual`, and `restingAt`, which solves a spring that comes to rest at a duration |
-| `src/transition.ts` | Transition options: their kinds, their keys, telling them apart, checking them, and resolving each one, once, into a `TransitionDescriptor` |
-| `src/playback-options.ts` | `PlaybackOptions`, `PlaybackDescriptor`, `RepeatOptions`, `RepeatMode` and `Stagger`, their checks and their clamps, `checkedStaggerOf` and `playbackDescriptorOf` |
+| `src/transition.ts` | Transition options: their kinds, their keys, telling them apart, checking them, and resolving them into a `TransitionDescriptor`, cached by value |
+| `src/playback-options.ts` | `PlaybackOptions`, `RepeatOptions`, `RepeatMode`, `Stagger`, `RepeatDescriptor` and `Oscillation`, their checks and their clamps, `checkedStaggerOf`, `resolveDelay` and `repeatDescriptorOf` |
 | `src/stagger.ts` | The `stagger` utility, `StaggerSpacing`, `StaggerOptions` and `StaggerOrigin` |
-| `src/animation-timing.ts` | `AnimationTiming`, `AnimationTimingOptions` and `TimedTweenTiming`, with validation and clamping |
+| `src/animation-timing.ts` | `AnimationTiming`, `AnimationTimingOptions` and `TimedTweenTiming`, with validation, and an animation timing's transition, delay and repeats resolved |
 | `src/at.ts` | `At`, `PositionDescriptor`, `parsePositionDescriptor`, `checkPositionDescriptor` and `resolvePosition` |
 | `src/sequence-timing.ts` | `SequenceTimingBuilder`, `SequenceTiming` and its entries, with validation |
 | `src/naming.ts` | `Naming` and `naming`: every naming rule. The names unnamed entries take, entry paths (`EntryPath`), track entry names (`trackItemNameOf`, `trackGroupNameOf`), and native animation ids |
@@ -646,7 +657,7 @@ Every error has the type of what went wrong:
 | `src/utils/environment.ts` | `isProduction`: whether a bundler built it for production, from `process.env.NODE_ENV`; false where `process` doesn't exist |
 | `src/utils/math.ts` | Interpolation and solving monotone functions |
 | `src/utils/records.ts` | Reading numeric-keyed records in order |
-| `src/utils/collections.ts` | `groupBy`, `getOrInsertComputed`, `partitionPoint` (binary search for the first item past a point) |
+| `src/utils/collections.ts` | `groupBy`, `getOrInsertComputed`, `partitionPoint` (binary search for the first item past a point), and `LeastRecentlyUsedCache` |
 | `src/tracks/track-values.ts` | `TrackValue`, and its value tokens `CurrentValueToken` and `InterpolationToken`: a track's values, given or left for the effects stage to work out, `currentValueToken` and `valueBetween` |
 | `src/tracks/track-entries.ts` | `TrackEntry`, with `repeats` and `repeatsForever`, `TrackStop` and `valueAtProgress`, and a track's entries, `TrackItem` and `TrackGroup`: an entry's run, its stops, and what the tracks stage gives |
 | `src/tracks/track-entry-builder.ts` | `TrackEntryBuilder`, and the builders that extend it, `TrackItemBuilder` and `TrackGroupBuilder`: a track's entry built step by step, an item entry's run with placeholders for its missing values, or a repeating sequence's run with the builders of the entries in it, with its values at a time |
@@ -672,8 +683,8 @@ Relative imports end in `.ts`, and `rewriteRelativeImportExtensions` makes the b
 ```
 new WAAPIAnimator({scope}).animate(definition)    scope: document.documentElement by default
 │
-├─ 1. Plan         plan(definition, targetsResolver)  → AnimationPlan | SequencePlan tree
-│                  (targets resolved §5.1, starts, delays and repeats §5.3; values stay as given §5.2)
+├─ 1. Plan         plan(definition, targetsResolver)  → AnimationPlan | SequencePlan tree, or undefined: nothing plays
+│                  (targets resolved §5.1, starts and delays §5.3; values stay as given §5.2)
 ├─ 2. Tracks       new TracksResolver(plan, naming).resolve()  → Tracks: a Track per target and property (§5.4)
 │                  (entries layered, repeating sequences kept as groups; missing values from neighbours,
 │                   or described; holds)
@@ -691,7 +702,7 @@ The plan walks the definition tree, which holds every target and value, so nothi
 
 ### 5.1 Targets
 
-The plan resolves each animation definition's target as it reaches it, through the `TargetsResolver` it's given. The animator's resolves each target once per `animate`, however many times a sequence plays it, through `resolveTargets` (§3.3): a selector is queried in the scope, and a function is called with it. Elements are deduplicated. An animation with no elements has an iteration and span duration of 0, so it starts and ends at its position.
+The plan resolves each animation definition's target as it reaches it, through the `TargetsResolver` it's given. The animator's resolves each target once per `animate`, however many times a sequence plays it, through `resolveTargets` (§3.3): a selector is queried in the scope, and a function is called with it. Elements are deduplicated. An animation with no elements has a span duration of 0, so it starts and ends at its position, and the entries after it are placed against that, but it has no plan (§5.3).
 
 ### 5.2 Values
 
@@ -709,7 +720,7 @@ Reversed stops, holds, trimming and every repeat hold the same values, so the va
 
 ### 5.3 Plan
 
-`plan(definition, targetsResolver)` (`src/plan.ts`) places the definition in time, through the internal `AnimationPlanner` and `SequencePlanner`. It returns a tree with the definition's levels, an `AnimationPlan` for each animation and a `SequencePlan` for each sequence, holding what playing it needs. Positions are resolved within each sequence (§2.7), but every time the plan gives is after the outermost definition starts.
+`plan(definition, targetsResolver)` (`src/plan.ts`) places the definition in time, through the internal `AnimationPlanner` and `SequencePlanner`. It returns a tree with the definition's levels, an `AnimationPlan` for each animation and a `SequencePlan` for each sequence, holding what playing it needs, or `undefined` when nothing in the definition has targets. Positions are resolved within each sequence (§2.7), but every time the plan gives is after the outermost definition starts.
 
 | Field | Meaning |
 |---|---|
@@ -717,24 +728,26 @@ Reversed stops, holds, trimming and every repeat hold the same values, so the va
 | `stopsByProperty` | An animation's only: its definition's `TweenStops`, by property |
 | `entries` | A sequence's: each entry's node, by name, in order |
 | `start` | Where the entry starts, before its delay: its sequence's `start` plus its position, 0 for the outermost definition. What `<` refers to |
-| `iterationDuration` | One iteration of an animation, without delays or repeats. A sequence's runs from 0 to the latest end among its entries, gaps included |
-| `easing` | An animation's only: the easing its transition resolves to (§2.2) |
+| `iterationDuration` | One iteration of an animation, its timing's `duration`, without delays or repeats. A sequence's runs from 0 to the latest end among its entries, gaps included |
+| `easing` | An animation's only: its timing's `easing` (§2.2) |
 | `repeatCount` | The iterations after the first, `Infinity` forever |
 | `repeatDelay` | How long it holds its end value before each repeat, in seconds |
 | `oscillate` | What every other iteration flips (`Oscillation`): `'time'`, so it plays backwards, or `'values'`, so it runs from the end values to the start ones with its easing forwards. Without it, every repeat starts over |
 
 Leaves also keep `targets` (`StaggeredTarget`): each element as `target`, with the `start` of the animation on it, the entry's `start` plus the animation's own delay for it (its number, or its stagger at the element's index).
 
-**Repeats** (`RepeatDescriptor`, `repeatDescriptorOf`). An animation's timing gives its `RepeatOptions`, which the planner turns into a `RepeatDescriptor`, `repeatCount`, `repeatDelay` and `oscillate`, once: `repeat` is the count, `reverse` flips `'time'`, `mirror` flips `'values'`, and `loop` has no `oscillate`. An animation without duration, which includes one without targets, or without repeats has a `repeatCount` and `repeatDelay` of 0 and no `oscillate`. A sequence doesn't repeat until sequences can; tests give repeating ones their repeats (§7).
+**Repeats.** An animation's plan copies its timing's `RepeatDescriptor` (§2.4). A sequence doesn't repeat until sequences can; tests give repeating ones their repeats (§7).
+
+**Entries without targets.** An animation without targets has no plan, and a sequence has none when none of its entries has one, at any depth. A sequence's plan leaves out the entries that have none. They still keep their positions, so the entries after them are placed as before, and the sequence's iteration duration still runs to their ends.
 
 **Planning in steps.** Each planner plans one entry, once:
-1. `of(definition, targetsResolver)` takes everything that doesn't depend on where the entry sits. An `AnimationPlanner` resolves the targets, each target's own delay, the easing, the durations and the repeats. A `SequencePlanner` makes and positions the planners of its whole subtree, as below.
+1. `of(definition, targetsResolver)` takes everything that doesn't depend on where the entry sits. An `AnimationPlanner` resolves the targets, each target's own delay, and the span duration, and keeps the timing, whose duration, easing and repeats are already resolved. A `SequencePlanner` makes and positions the planners of its whole subtree, as below.
 2. `position(descriptor, entrySpans)` resolves the position among the entries before it, within its sequence, clamped to 0. A `=%` offset reads the planner's own span duration, which is already known.
-3. `plan(sequenceStart)` gives the node, its `start` its position after `sequenceStart`, where its sequence starts (0 for the outermost definition). Where a sequence starts is only known once it's positioned in the one around it, which happens after its own `of`, so this is the step that turns positions into starts.
+3. `plan(sequenceStart)` gives the node, or `undefined` when it has none, its `start` its position after `sequenceStart`, where its sequence starts (0 for the outermost definition). Where a sequence starts is only known once it's positioned in the one around it, which happens after its own `of`, so this is the step that turns positions into starts.
 
-The span duration (§2.7.2) stays in the planners: only placing the entries after an entry and working out its sequence's durations need it, and both happen while planning. It reads the timing's `RepeatOptions` as they are.
+The span duration (§2.7.2) stays in the planners: only placing the entries after an entry and working out its sequence's durations need it, and both happen while planning. It reads the timing's `RepeatDescriptor` (`iterationsSpanDuration`), so it always agrees with the repeats the plan gives.
 
-`SequencePlanner.of` makes a planner for each entry, positions it and keeps its `span` for the positions after it. A sequence's iteration duration and span duration are both the latest end among its entries. Its `plan(sequenceStart)` plans each entry from its own `start`.
+`SequencePlanner.of` makes a planner for each entry, positions it and keeps its `span` for the positions after it. A sequence's iteration duration and span duration are both the latest end among its entries. Its `plan(sequenceStart)` plans each entry from its own `start`, and keeps the ones that have a plan.
 
 ### 5.4 Tracks
 
@@ -971,14 +984,16 @@ For each target, property and effect, in order, the adapter calls `element.anima
 | Definitions are value-free; every change is 0→1 | One definition serves any properties, targets and engine |
 | Duration lives in the transition | A physical spring's duration comes from its physics |
 | Spring quantities are in progress units | Values don't exist at definition time, and spring motion scales linearly |
-| Timings validate and store; the plan resolves each transition, once | Resolving isn't a timing's job. The checks still throw where mistakes are made, and a timing shares one easing every time it's played |
+| Timings resolve their transition, delay and repeats as they're made | Planning only places what's resolved, a spring that can't come to rest throws where the timing is made, and a timing shares one easing every time it's played |
+| Resolved transitions are cached by value, bounded | Equal transitions in different timings share the spring math and the spring fits, and velocities from gestures can't grow the cache forever |
 | Easings are windowed and keep raw progress | Splitting, cutting and reversing are all window operations, and a spring window can start and end at the same progress |
 | Easing math in the core, WAAPI conversion in the adapter | Spline fitting, CSS pieces and `linear()` are engine concerns |
 | Mirror flips the progress and keeps the easing | That's what makes a mirrored spring settle the way it started |
 | Animations are unnamed; entries are named | The same animation can be placed many times |
 | Positions and references are local to each sequence | Entry names only need to be unique within their sequence |
 | The plan is resolved at adaptation | Staggers depend on the element count, which only the targets give, resolved in the scope |
-| The plan places the definition in time entirely: starts after the outermost definition starts, each target's delay added, and repeats as runs | The tracks stage only lays that out by target and property, and a timing's repeat options are read in one place |
+| The plan places the definition in time entirely: starts after the outermost definition starts, each target's delay added, and repeats as runs | The tracks stage only lays that out by target and property |
+| Entries without targets have no plan | Nothing downstream has to handle an entry that plays nothing; positions still see them |
 | Errors by kind: `RangeError`, `TypeError`, `SyntaxError`, `Error` | A caller can tell a bad number, a bad shape, a bad position and a bad state apart (§3.10) |
 | Track runs named by entry path | Definitions are reusable, so identity is the place in the tree, not the object |
 | Values resolved per target, through probes | Relative units depend on the element; probes are untouched by animations and give absolute values |
@@ -1007,7 +1022,7 @@ It compares the result with the definitions' own math, sampled at times that mis
 
 The cases cover single animations through every repeat, entries in sequences, and entries in repeating sequences, through plans whose sequences tests give repeats (`withRepeats`: `repeatCount`, `repeatDelay` and `oscillate`). Easings are cubic Bézier (including overshoot), jump-start and jump-end steps, and springs. Plan, timing, fill, layering and missing-value cases are checked exactly. A builder holding after it ends when the one under its end never shows is checked on `layer` directly, since no definition lays builders in that order. The tracks themselves are checked on `TracksResolver` directly: groups kept with their own repeats, sequences that don't repeat laid out on the track around them, continuations, and the holds and missing values of a group's entries. The holds WAAPI can't play are checked on hand-made tracks, since the tracks stage never gives them.
 
-`tests/animation.test.ts` covers timings: validation and clamping, telling transition kinds apart, splitting `AnimationTimingOptions`, the `DampedSpring` factories, and staggers. `tests/sequence.test.ts` covers positions (parsing, one offset of each kind in order, and resolving every reference and share), sequence timings, targets, tween stops (their forms, their checks and their ends), and definitions: values checked as they're made, naming, immutability, their entries, and private constructors.
+`tests/animation.test.ts` covers timings: validation and clamping, telling transition kinds apart, splitting `AnimationTimingOptions`, equal transitions sharing a descriptor, `LeastRecentlyUsedCache`, the `DampedSpring` factories, and staggers. `tests/sequence.test.ts` covers positions (parsing, one offset of each kind in order, and resolving every reference and share), sequence timings, targets, tween stops (their forms, their checks and their ends), and definitions: values checked as they're made, naming, immutability, their entries, and private constructors.
 
 Values are tested through stand-in `CSSValueResolver`s that align numbers with `alignNumbers` and give every property a current value of 0.25. The tests run without a DOM. `tests/play.test.ts` plays definitions on a stand-in one and checks the animations' ids and staggered delays, but `domValueResolver`, probes and real elements have no tests yet.
 

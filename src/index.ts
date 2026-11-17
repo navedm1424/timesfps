@@ -9,7 +9,7 @@ export type {
     VisualSpringTransitionOptions
 } from "./transition.ts";
 
-export type {PlaybackDescriptor, PlaybackOptions, RepeatMode, RepeatOptions, Stagger} from "./playback-options.ts";
+export type {PlaybackOptions, RepeatMode, RepeatOptions, Stagger} from "./playback-options.ts";
 export {stagger} from "./stagger.ts";
 export type {StaggerOptions, StaggerOrigin, StaggerSpacing} from "./stagger.ts";
 

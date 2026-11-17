@@ -73,8 +73,8 @@ describe("SequenceTimingBuilder", () => {
 
     it("takes a transition together with its timing's options", () => {
         const timing = SequenceTiming.builder().add({duration: 1, delay: 0.5, repeat: 2}, 'a').build();
-        expect(timing.entries[0].animation.playback).toEqual({delay: 0.5, repeat: 2});
-        expect(timing.entries[0].animation.transition).toEqual({duration: 1});
+        const {duration, delay, repeat} = timing.entries[0].animation;
+        expect({duration, delay, repeat}).toEqual({duration: 1, delay: 0.5, repeat: {repeatCount: 2, repeatDelay: 0}});
     });
 
     it("rejects positions it can't parse, whose time isn't finite, or that refer to a later entry", () => {
@@ -118,7 +118,7 @@ describe("positions", () => {
     const element = {} as Element;
     const startsOf = (timing: SequenceTiming, names: string[]) => {
         const mapping = Object.fromEntries(names.map(name => [name, [element, {opacity: 1}]]));
-        const sequencePlan = plan(SequenceDefinition.of(timing, mapping as never), target => resolveTargets(target, element));
+        const sequencePlan = plan(SequenceDefinition.of(timing, mapping as never), target => resolveTargets(target, element))!;
         return Object.fromEntries(names.map(name => [name, sequencePlan.entries.get(name)!.start]));
     };
 

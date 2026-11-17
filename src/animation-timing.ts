@@ -1,27 +1,42 @@
+import type {Easing} from "./easing.ts";
 import {
     checkPlaybackOptions,
     clampedDelay,
     clampedRepeats,
-    type PlaybackDescriptor,
-    playbackDescriptorOf,
     type PlaybackOptions,
-    type RepeatOptions
+    type RepeatDescriptor,
+    repeatDescriptorOf,
+    type RepeatOptions,
+    resolveDelay,
+    type Stagger
 } from "./playback-options.ts";
-import {checkTransitionOptions, isTransitionKey, type TransitionOptions} from "./transition.ts";
+import {checkTransitionOptions, isTransitionKey, resolveTransition, type TransitionOptions} from "./transition.ts";
 import type {Seconds} from "./types.ts";
 import {checkNumber} from "./utils/validation.ts";
 
 /** A transition with the options of its timing spread into it. */
 export type AnimationTimingOptions = TransitionOptions & PlaybackOptions;
 
-/** One run through the transition, with its delay and repeats. */
+/** One run through the transition, with its delay and repeats, resolved as it's made. */
 export class AnimationTiming {
-    readonly playback: PlaybackDescriptor;
+    /** How long one iteration lasts, without delays or repeats. */
+    readonly duration: Seconds;
+    /** The easing one iteration runs. */
+    readonly easing: Easing;
+    /** Before its first iteration: every target's, or a stagger that gives each target's. */
+    readonly delay: Seconds | Stagger;
+    /** How it repeats after its first iteration. */
+    readonly repeat: RepeatDescriptor;
 
-    private constructor(readonly transition: TransitionOptions, options: PlaybackOptions = {}) {
+    private constructor(transition: TransitionOptions, options: PlaybackOptions = {}) {
         checkPlaybackOptions(options, "The timing");
         checkTransitionOptions(transition, "The timing's transition");
-        this.playback = playbackDescriptorOf(options);
+        const {duration, easing} = resolveTransition(transition);
+        const {delay, ...repeatOptions} = options;
+        this.duration = duration;
+        this.easing = easing;
+        this.delay = resolveDelay(delay);
+        this.repeat = repeatDescriptorOf(duration, repeatOptions);
     }
 
     /** A descriptor is split by key into its transition and its options. */
@@ -36,6 +51,8 @@ export class AnimationTiming {
         return new AnimationTiming(transitionOptions, {...playbackOptions, ...options});
     }
 }
+
+// ========== UNDER DEVELOPMENT ==========
 
 /**
  * `repeat` must be finite.

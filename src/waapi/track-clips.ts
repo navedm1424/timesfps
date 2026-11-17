@@ -1,6 +1,6 @@
 import type {Easing} from "../easing.ts";
 import {linear} from "../easing-specifier.ts";
-import type {Oscillation} from "../plan.ts";
+import type {Oscillation} from "../playback-options.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {invLerp, remap} from "../utils/math.ts";
 import {type TrackEntry, type TrackGroup, type TrackItem, type TrackStop, valueAtProgress} from "../tracks/track-entries.ts";

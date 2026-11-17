@@ -1,5 +1,5 @@
 import {AnimationTiming, type SpringTransitionOptions} from "timesfps";
-import {PRECISION, resolveTransition, SpringEasing} from "timesfps/internals";
+import {PRECISION, SpringEasing} from "timesfps/internals";
 
 export type SpringKind = "physical" | "duration" | "visual";
 
@@ -70,7 +70,7 @@ export function physicsOf(transition: SpringTransitionOptions) {
 
 /** The spring the transition plays, over the time it runs. */
 export function springEasingOf(transition: SpringTransitionOptions): SpringEasing {
-    const {easing} = resolveTransition(AnimationTiming.of(transition).transition);
+    const {easing} = AnimationTiming.of(transition);
     if (!(easing instanceof SpringEasing)) throw new TypeError("The transition isn't a spring.");
     return easing;
 }

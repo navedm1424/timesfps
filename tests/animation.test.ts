@@ -3,6 +3,7 @@ import {AnimationTiming} from "../src/animation-timing.ts";
 import {DampedSpring} from "../src/damped-spring.ts";
 import {PRECISION} from "../src/constants.ts";
 import {stagger} from "../src/stagger.ts";
+import {LeastRecentlyUsedCache} from "../src/utils/collections.ts";
 import {resolveTransition, type TransitionOptions} from "../src/transition.ts";
 
 describe("AnimationTiming.of", () => {
@@ -19,8 +20,10 @@ describe("AnimationTiming.of", () => {
     });
 
     it("clamps negative delays and repeats to 0 and rounds fractional repeat counts down", () => {
-        expect(AnimationTiming.of({duration: 1}, {delay: -1, repeat: -1.5, repeatDelay: -1}).playback).toEqual({delay: 0, repeat: 0, repeatDelay: 0});
-        expect(AnimationTiming.of({duration: 1}, {repeat: 2.7}).playback.repeat).toBe(2);
+        const clamped = AnimationTiming.of({duration: 1}, {delay: -1, repeat: -1.5, repeatDelay: -1});
+        expect({delay: clamped.delay, repeat: clamped.repeat}).toEqual({delay: 0, repeat: {repeatCount: 0, repeatDelay: 0}});
+        expect(AnimationTiming.of({duration: 1}, {repeat: 1, repeatDelay: -1}).repeat.repeatDelay).toBe(0);
+        expect(AnimationTiming.of({duration: 1}, {repeat: 2.7}).repeat.repeatCount).toBe(2);
     });
 
     it("rejects negative durations, and spring options no spring can come to rest with", () => {
@@ -39,7 +42,7 @@ describe("AnimationTiming.of", () => {
     });
 
     it("tells the kinds of transition apart by their keys, and rejects keys of another kind", () => {
-        const resolved = (transition: TransitionOptions) => resolveTransition(AnimationTiming.of(transition).transition);
+        const resolved = (transition: TransitionOptions) => AnimationTiming.of(transition);
         expect(resolved({duration: 1, easing: 'easeIn'}).easing.constructor.name).toBe('CubicBezierEasing');
         expect(resolved({duration: 1, bounce: 0.2}).duration).toBe(1);
         expect(resolved({visualDuration: 0.5, bounce: 0.2}).easing.constructor.name).toBe('SpringEasing');
@@ -56,15 +59,37 @@ describe("AnimationTiming.of", () => {
 describe("AnimationTiming.of with a descriptor", () => {
     it("splits a descriptor into its transition and its options", () => {
         const timing = AnimationTiming.of({duration: 0.6, bounce: 0.2, delay: 0.1, repeat: 2, repeatMode: 'mirror'});
-        expect(timing.transition).toEqual({duration: 0.6, bounce: 0.2});
-        expect(timing.playback).toEqual({delay: 0.1, repeat: 2, repeatMode: 'mirror'});
+        expect(timing.duration).toBe(0.6);
+        expect(timing.easing).toBe(resolveTransition({duration: 0.6, bounce: 0.2}).easing);
+        expect(timing.delay).toBe(0.1);
+        expect(timing.repeat).toEqual({repeatCount: 2, repeatDelay: 0, oscillate: 'values'});
     });
 
     it("gives the same timing as the transition and options passed apart", () => {
         const spread = AnimationTiming.of({duration: 0.4, easing: 'easeOut', delay: 0.2});
         const apart = AnimationTiming.of({duration: 0.4, easing: 'easeOut'}, {delay: 0.2});
-        expect(spread.transition).toEqual(apart.transition);
-        expect(spread.playback).toEqual(apart.playback);
+        expect(spread).toEqual(apart);
+        expect(spread.easing).toBe(apart.easing);
+    });
+});
+
+describe("resolveTransition", () => {
+    it("resolves equal transitions to one descriptor, defaults filled in", () => {
+        expect(resolveTransition({stiffness: 100, damping: 10})).toBe(resolveTransition({stiffness: 100, damping: 10, mass: 1, velocity: 0}));
+        expect(AnimationTiming.of({visualDuration: 0.5, bounce: 0.2}).easing).toBe(AnimationTiming.of({visualDuration: 0.5, bounce: 0.2, delay: 1}).easing);
+        expect(resolveTransition({duration: 1})).toBe(resolveTransition({duration: 1, easing: 'linear'}));
+        expect(resolveTransition({duration: 1, bounce: 0.2})).not.toBe(resolveTransition({duration: 1, bounce: 0.3}));
+    });
+});
+
+describe("LeastRecentlyUsedCache", () => {
+    it("forgets the least recently used entry to make room, and makes each one it gives the most recently used", () => {
+        const cache = new LeastRecentlyUsedCache<string, number>(2);
+        let made = 0;
+        const valueOf = (key: string) => cache.getOrInsertComputed(key, () => ++made);
+        expect([valueOf('a'), valueOf('b'), valueOf('a')]).toEqual([1, 2, 1]);
+        expect(valueOf('c')).toBe(3);
+        expect([valueOf('a'), valueOf('b')]).toEqual([1, 4]);
     });
 });
 

@@ -1,6 +1,6 @@
 import type {CSSValue} from "../dom/mapping.ts";
 import type {Easing} from "../easing.ts";
-import type {Oscillation} from "../plan.ts";
+import type {Oscillation} from "../playback-options.ts";
 import type {TweenStops} from "../tween-stops.ts";
 import type {Progress, Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";

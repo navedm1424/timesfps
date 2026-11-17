@@ -9,7 +9,7 @@ import {type AnimationPlan, plan, type Plan, type SequencePlan} from "../src/pla
 import {SequenceDefinition} from "../src/sequence.ts";
 import {SequenceTiming} from "../src/sequence-timing.ts";
 import type {PlaybackOptions, RepeatOptions} from "../src/playback-options.ts";
-import {resolveTransition, type TransitionOptions} from "../src/transition.ts";
+import type {TransitionOptions} from "../src/transition.ts";
 import type {Seconds} from "../src/types.ts";
 import {lerp} from "../src/utils/math.ts";
 import {sortedEntriesOf} from "../src/utils/records.ts";
@@ -46,7 +46,7 @@ function reversedOf(stops: NumericStops): NumericStops {
 }
 
 function animationPlanOf(timing: AnimationTiming, elements: readonly Element[], values: AnimationValues = line): AnimationPlan {
-    return plan(animation(elements, values, timing), target => resolveTargets(target, scope));
+    return plan(animation(elements, values, timing), target => resolveTargets(target, scope))!;
 }
 
 /** The timing's definition, with each animation leaf's values and elements by its path; a leaf without elements given has `element`. */
@@ -59,7 +59,7 @@ function sequencePlanOf(
         const entryPath = naming.entryPathOf(path, entry.name);
         return [entry.name, 'sequence' in entry ? mappingOf(entry.sequence, entryPath) : [elementsByPath[entryPath] ?? [element], valuesByPath[entryPath]]];
     }));
-    return plan(SequenceDefinition.of(timing, mappingOf(timing, undefined) as never), target => resolveTargets(target, scope));
+    return plan(SequenceDefinition.of(timing, mappingOf(timing, undefined) as never), target => resolveTargets(target, scope))!;
 }
 
 /** How a sequence repeats, as a plan gives it; what's left out is as a sequence that doesn't repeat has it. */
@@ -270,7 +270,7 @@ describe("plans", () => {
         expect(sequencePlan.entries.get('c')).toMatchObject({start: 1});
     });
 
-    it("keeps an entry with no targets at its position, taking no time there, however it repeats", () => {
+    it("keeps an entry with no targets at its position, taking no time there, however it repeats, but gives it no plan", () => {
         const sequence = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 1}), 'a')
             .add(AnimationTiming.of({duration: 1}, {delay: 1, repeat: Infinity}), 'b', '>+2')
@@ -278,11 +278,31 @@ describe("plans", () => {
             .add(AnimationTiming.of({duration: 1}), 'd', '>>+1')
             .build();
         const sequencePlan = sequencePlanOf(sequence, {a: line, b: line, c: line, d: line}, {b: [], d: []});
-        expect(sequencePlan.entries.get('b')).toMatchObject({targets: [], start: 3, iterationDuration: 0});
+        expect([...sequencePlan.entries.keys()]).toEqual(['a', 'c']);
         expect(sequencePlan.entries.get('c')).toMatchObject({start: 3});
-        expect(sequencePlan.entries.get('d')).toMatchObject({start: 5});
         expect(sequencePlan).toMatchObject({iterationDuration: 5});
         expect(sequenceEndOf(sequence, {a: line, b: line, c: line, d: line}, {b: [], d: []})).toBe(5);
+    });
+
+    it("has no plan for an animation without targets, nor for a sequence with none in it, at any depth", () => {
+        const resolveNone = () => [];
+        expect(plan(animation([], line, AnimationTiming.of({duration: 1})), resolveNone)).toBeUndefined();
+
+        const inner = SequenceTiming.builder().add(AnimationTiming.of({duration: 1}), 'a').build();
+        const outer = SequenceTiming.builder().add(inner, 's').add(AnimationTiming.of({duration: 1}), 'b').build();
+        expect(plan(SequenceDefinition.of(outer, {s: {a: [[], line]}, b: [[], line]} as never), resolveNone)).toBeUndefined();
+
+        const sequencePlan = sequencePlanOf(outer, {'s>a': line, b: line}, {'s>a': []});
+        expect([...sequencePlan.entries.keys()]).toEqual(['b']);
+        expect(sequencePlan.entries.get('b')).toMatchObject({start: 0});
+    });
+
+    it("counts no repeat delays in the span of an animation without duration, which doesn't repeat", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 0}, {repeat: 2, repeatDelay: 0.5}), 'a')
+            .add(AnimationTiming.of({duration: 1}), 'next', 'a>')
+            .build();
+        expect(sequencePlanOf(sequence, {a: line, next: line}).entries.get('next')).toMatchObject({start: 0});
     });
 
 });
@@ -413,7 +433,7 @@ describe("NativeEffectsResolver values", () => {
         it(`follows ${name} through every repeat`, () => {
             for (const options of repeatings) {
                 const timing = AnimationTiming.of(transition, options);
-                const {duration, easing} = resolveTransition(timing.transition);
+                const {duration, easing} = timing;
                 const effects = animationTracksOf(timing, valuesWithStop).get(element)!.x!;
                 const definedAt = (time: number) => definedValueAt(easing, stopsWithStop, duration, options, time);
                 expectTrackToFollow(effects, definedAt, tolerance, 10, JSON.stringify(options));

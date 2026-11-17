@@ -78,7 +78,9 @@ const standInElement = {} as Element;
 /** The keyframes the WAAPI adapter plays the spring as, from 0 to 1. */
 function keyframesOf(transition: SpringTransitionOptions): readonly NativeKeyframe[] {
     const definition = animation(standInElement, {progress: [0, 1]}, transition);
-    const tracks = NativeEffectsResolver.resolve(new TracksResolver(plan(definition, () => [standInElement]), naming).resolve(), plainNumberResolver);
+    const definitionPlan = plan(definition, () => [standInElement]);
+    if (!definitionPlan) throw new Error("A spring on its stand-in element should have a plan.");
+    const tracks = NativeEffectsResolver.resolve(new TracksResolver(definitionPlan, naming).resolve(), plainNumberResolver);
     const [effect, ...others] = tracks.get(standInElement)!.progress!;
     if (!effect || others.length > 0) throw new Error("A spring on its own should play as one effect.");
     return effect.keyframes;
