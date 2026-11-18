@@ -39,23 +39,24 @@ export class TracksResolver {
 
     /** Adds its entries in their order, in a group of every track builder that runs as it does. */
     private addSequence(sequence: SequencePlan, path?: EntryPath): void {
-        this.startGroup(trackEntryOf(sequence.start, sequence));
+        this.startGroup(sequence);
         for (const [name, entryPlan] of sequence.entries)
             this.add(entryPlan, this.naming.entryPathOf(path, name));
         this.endGroup();
     }
 
     /** Adds a run of each property on each target, from where it starts on the target. */
-    private addAnimation(animation: AnimationPlan, path?: EntryPath): void {
-        const {stopsByProperty, easing, targets} = animation;
+    private addAnimation({stopsByProperty, easing, targets, iterationDuration, repeatCount, repeatDelay, oscillate}: AnimationPlan, path?: EntryPath): void {
         for (const {target, start} of targets) {
-            const timing = trackEntryOf(start, animation);
+            const timing: TrackEntry = {start, iterationDuration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
             for (const [property, stops] of Object.entries(stopsByProperty))
                 this.trackBuilderOf(target, property).add({path, ...timing, easing, stops});
         }
     }
 
-    private startGroup(timing: TrackEntry): void {
+    /** Starts a group in every track builder, which runs as the sequence does. */
+    private startGroup({start, iterationDuration, repeatCount, repeatDelay, oscillate}: SequencePlan): void {
+        const timing: TrackEntry = {start, iterationDuration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
         this.startedGroups.push(timing);
         for (const buildersByProperty of this.buildersByTarget.values())
             for (const property in buildersByProperty)
@@ -97,11 +98,6 @@ interface TrackGroupEntry extends TrackEntry {
 
 /** Each repeating group's builder, with the builders under it that continue what in it repeats forever. */
 type ContinuationsByBuilder = Map<TrackEntryBuilder, readonly TrackEntryBuilder[]>;
-
-/** The run of what starts at `start` and repeats its iterations as the entry's plan says. */
-function trackEntryOf(start: Seconds, {iterationDuration, repeatCount, repeatDelay, oscillate}: Plan): TrackEntry {
-    return {start, iterationDuration, repeatCount, repeatDelay, ...(oscillate && {oscillate})};
-}
 
 /**
  * The entries that animate one property of one target, in the groups of the sequences around them, built into its track once they're all added:

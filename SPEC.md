@@ -766,11 +766,12 @@ new TracksResolver(plan, naming).resolve()
 ```
 
 **1. Walk the plan.** Entries are added to their `TrackBuilder` in declaration order, which keeps them in that order. `TracksResolver` gives every `TrackBuilder` its `naming`.
-- **Runs.** A `TrackEntry` (`src/tracks/track-entries.ts`) is the run every entry of a track has. `trackEntryOf(start, node)` makes one from a start and a plan's repeats:
+- **Runs.** A `TrackEntry` (`src/tracks/track-entries.ts`) is the run every entry of a track has:
   - `start`, after the outermost definition starts, and `iterationDuration`, as the plan gives it;
   - `repeatCount`, `repeatDelay` and `oscillate`: `TrackEntry` extends the plan's `RepeatDescriptor`, and takes them as the plan gives them (§5.3).
+- Each part of the resolver that takes a plan makes its runs from it itself, so nothing else is given a whole plan only for its run: the resolver's `startGroup` from a `SequencePlan`, and `addAnimation` from an `AnimationPlan`.
 - Each sequence gets a run from its plan's `start`.
-- **Groups.** `addSequence` starts a group of the sequence's run in every track builder (`startGroup`), adds its entries, then ends the group (`endGroup`). The resolver keeps the runs of the groups started (`startedGroups`), and a track builder made while they are starts them too. So every track builder has a group of every sequence, whether or not anything in it is on its track.
+- **Groups.** `addSequence` gives the resolver's `startGroup` the sequence's plan, which starts a group of the sequence's run in every track builder (their `startGroup`); it then adds the sequence's entries, and ends the group (`endGroup`). The resolver keeps the runs of the groups started (`startedGroups`), and a track builder made while they are starts them too. So every track builder has a group of every sequence, whether or not anything in it is on its track.
 - Each leaf adds a `TrackItemEntry` per target and property, a `TrackEntry` with:
   - `start`: where the animation starts on the target, from the plan's `targets`;
   - `iterationDuration` and its repeats from its own plan, and its `easing` and `stops`;
