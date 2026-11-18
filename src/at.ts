@@ -44,7 +44,7 @@ export interface PositionDescriptor<Name extends string> {
 }
 
 /** Where an entry starts in sequence-local time, and how long it lasts. */
-export interface EntrySpan {
+export interface Span {
     start: Seconds;
     duration: Seconds;
 }
@@ -108,28 +108,28 @@ export function checkPositionDescriptor(position: PositionDescriptor<string>, ea
 
 /**
  * The inserted entry's sequence-local start, which can be negative.
- * `entrySpans` holds the earlier entries in order, so the last one is the previous entry; with none, the previous entry is the start of the sequence.
+ * `referenceSpans` holds the earlier entries in order, so the last one is the previous entry; with none, the previous entry is the start of the sequence.
  */
 export function resolvePosition<Name extends string>(
     descriptor: PositionDescriptor<Name>,
-    entrySpans: ReadonlyMap<Name, EntrySpan>,
+    referenceSpans: ReadonlyMap<Name, Span>,
     selfDuration: Seconds
 ): Seconds {
-    const {start, duration} = referenceSpanOf(descriptor.reference, entrySpans);
+    const {start, duration} = referenceSpanOf(descriptor.reference, referenceSpans);
     const {seconds, referenceFraction, selfFraction} = descriptor.offset;
     const point = descriptor.anchor === 'start' ? start : start + duration;
     return point + seconds + referenceFraction * duration + selfFraction * selfDuration;
 }
 
-function referenceSpanOf<Name extends string>(reference: PositionReference<Name>, entrySpans: ReadonlyMap<Name, EntrySpan>): EntrySpan {
-    const spans = [...entrySpans.values()];
+function referenceSpanOf<Name extends string>(reference: PositionReference<Name>, referenceSpans: ReadonlyMap<Name, Span>): Span {
+    const spans = [...referenceSpans.values()];
     switch (reference.kind) {
         case 'previousEntry':
             return spans.at(-1) ?? {start: 0, duration: 0};
         case 'everythingSoFar':
             return {start: 0, duration: Math.max(0, ...spans.map(({start, duration}) => start + duration))};
         case 'entry': {
-            const span = entrySpans.get(reference.name);
+            const span = referenceSpans.get(reference.name);
             if (!span) throw new Error(`No entry named "${reference.name}" comes before this position.`);
             return span;
         }

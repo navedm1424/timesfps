@@ -1,6 +1,6 @@
 import type {AnimationDefinition} from "./animation.ts";
 import type {AnimationTiming} from "./animation-timing.ts";
-import {type EntrySpan, type PositionDescriptor, resolvePosition} from "./at.ts";
+import {type PositionDescriptor, resolvePosition, type Span} from "./at.ts";
 import {type Target} from "./dom/mapping.ts";
 import type {Easing} from "./easing.ts";
 import type {RepeatDescriptor} from "./playback-options.ts";
@@ -57,36 +57,36 @@ export function plan(definition: Definition, resolveTargets: TargetsResolver): P
 }
 
 /** Plans an entry from its definition, which gives its duration, then its position among the entries before it. */
-abstract class EntryPlanner {
-    protected entryPosition: Seconds = 0;
+abstract class Planner {
+    protected localStart: Seconds = 0;
 
     protected constructor(
         /** Its duration for positions, from its position to where `>` refers to: its delay and repeats included, of which an infinite repeat counts its first iteration only. */
-        protected readonly spanDuration: Seconds
+        protected readonly referenceDuration: Seconds
     ) {}
 
     /** Resolves its position among the entries before it, clamped to the start of the sequence. */
-    position(descriptor: PositionDescriptor<string>, entrySpans: ReadonlyMap<string, EntrySpan>): this {
-        this.entryPosition = Math.max(0, resolvePosition(descriptor, entrySpans, this.spanDuration));
+    position(descriptor: PositionDescriptor<string>, referenceSpans: ReadonlyMap<string, Span>): this {
+        this.localStart = Math.max(0, resolvePosition(descriptor, referenceSpans, this.referenceDuration));
         return this;
     }
 
-    get span(): EntrySpan {
-        return {start: this.entryPosition, duration: this.spanDuration};
+    get referenceSpan(): Span {
+        return {start: this.localStart, duration: this.referenceDuration};
     }
 
     /** Its plan, in the sequence it's in, which starts at `sequenceStart`; `undefined` when nothing in it has targets, though it still keeps its position for the entries after it. */
     abstract plan(sequenceStart: Seconds): Plan | undefined;
 }
 
-class AnimationPlanner extends EntryPlanner {
+class AnimationPlanner extends Planner {
     private constructor(
         private readonly stopsByProperty: { readonly [property: string]: TweenStops },
         private readonly targets: readonly DelayedTarget[],
         private readonly timing: AnimationTiming,
-        spanDuration: Seconds
+        referenceDuration: Seconds
     ) {
-        super(spanDuration);
+        super(referenceDuration);
     }
 
     /** One without targets takes no time. */
@@ -97,14 +97,14 @@ class AnimationPlanner extends EntryPlanner {
         const {timing} = definition;
         const {delay, duration, repeat} = timing;
         const targets = elements.map((target, index): DelayedTarget => ({target, delay: typeof delay === 'function' ? delay(index, count) : delay}));
-        const spanDuration = count ? Math.max(...targets.map(target => target.delay)) + iterationsSpanDuration(duration, repeat) : 0;
+        const referenceDuration = count ? Math.max(...targets.map(target => target.delay)) + calcReferenceDuration(duration, repeat) : 0;
 
-        return new AnimationPlanner(definition.stopsByProperty, targets, timing, spanDuration);
+        return new AnimationPlanner(definition.stopsByProperty, targets, timing, referenceDuration);
     }
 
     plan(sequenceStart: Seconds): AnimationPlan | undefined {
         if (this.targets.length === 0) return undefined;
-        const start = sequenceStart + this.entryPosition;
+        const start = sequenceStart + this.localStart;
         return {
             type: 'animation',
             stopsByProperty: this.stopsByProperty,
@@ -118,9 +118,9 @@ class AnimationPlanner extends EntryPlanner {
 }
 
 /** A sequence lasts until the latest end among its entries, which is also its duration for positions. */
-class SequencePlanner extends EntryPlanner {
+class SequencePlanner extends Planner {
     private constructor(
-        private readonly entries: ReadonlyMap<string, EntryPlanner>,
+        private readonly entries: ReadonlyMap<string, Planner>,
         private readonly iterationDuration: Seconds
     ) {
         super(iterationDuration);
@@ -128,21 +128,21 @@ class SequencePlanner extends EntryPlanner {
 
     /** Makes a planner for each entry, and positions it once, among the entries before it. */
     static of(definition: SequenceDefinition, resolveTargets: TargetsResolver): SequencePlanner {
-        const entries = new Map<string, EntryPlanner>();
-        const entrySpans = new Map<string, EntrySpan>();
+        const entries = new Map<string, Planner>();
+        const referenceSpans = new Map<string, Span>();
         definition.timing.entries.forEach(({name, position}, index) => {
-            const planner = entryPlannerOf(definition.entries[index]!, resolveTargets).position(position, entrySpans);
-            entrySpans.set(name, planner.span);
+            const planner = entryPlannerOf(definition.entries[index]!, resolveTargets).position(position, referenceSpans);
+            referenceSpans.set(name, planner.referenceSpan);
             entries.set(name, planner);
         });
 
-        const iterationDuration = Math.max(0, ...[...entrySpans.values()].map(({start, duration}) => start + duration));
+        const iterationDuration = Math.max(0, ...[...referenceSpans.values()].map(({start, duration}) => start + duration));
         return new SequencePlanner(entries, iterationDuration);
     }
 
     /** Plans each entry in it, from where it starts, leaving out the ones that have no plan; `undefined` when none has one. */
     plan(sequenceStart: Seconds): SequencePlan | undefined {
-        const start = sequenceStart + this.entryPosition;
+        const start = sequenceStart + this.localStart;
         const entries = new Map<string, Plan>();
         for (const [name, planner] of this.entries) {
             const entryPlan = planner.plan(start);
@@ -160,12 +160,12 @@ class SequencePlanner extends EntryPlanner {
     }
 }
 
-function entryPlannerOf(entry: SequenceDefinitionEntry, resolveTargets: TargetsResolver): EntryPlanner {
+function entryPlannerOf(entry: SequenceDefinitionEntry, resolveTargets: TargetsResolver): Planner {
     return 'sequence' in entry ? SequencePlanner.of(entry.sequence, resolveTargets) : AnimationPlanner.of(entry.animation, resolveTargets);
 }
 
 /** The iterations and their repeat delays; only the first iteration when it repeats forever. */
-function iterationsSpanDuration(iterationDuration: Seconds, {repeatCount, repeatDelay}: RepeatDescriptor): Seconds {
+function calcReferenceDuration(iterationDuration: Seconds, {repeatCount, repeatDelay}: RepeatDescriptor): Seconds {
     if (repeatCount === Infinity) return iterationDuration;
     return iterationDuration * (repeatCount + 1) + repeatDelay * repeatCount;
 }

@@ -376,8 +376,8 @@ interface PositionOffset {
 - Each offset fills its kind's field, and a missing one is 0. `25%` is a fraction of 0.25.
 - `'<<'` is `everythingSoFar` at its `start`, and `'>>'` at its `end`.
 
-**Resolving.** `resolvePosition(descriptor, entrySpans, selfDuration)`:
-- `entrySpans` maps the earlier entries' names to `EntrySpan`s, `{start, duration}`, in order, so its last entry is the previous one. With none, the previous entry is `{start: 0, duration: 0}`.
+**Resolving.** `resolvePosition(descriptor, referenceSpans, selfDuration)`:
+- `referenceSpans` maps the earlier entries' names to `Span`s, `{start, duration}`, in order, so its last entry is the previous one. With none, the previous entry is `{start: 0, duration: 0}`.
 - Everything so far is `{start: 0, duration: latest end}`, where the latest end is the largest `start + duration`, or 0.
 - The result is the reference point, plus the seconds, plus `referenceFraction` × the reference duration, plus `selfFraction` × `selfDuration`.
 - It can be negative. The timings resolver (§5.3) clamps it to 0, and passes the inserted entry's duration only when `selfFraction` isn't 0, taking it from the entry's timings at position 0.
@@ -401,9 +401,9 @@ Times are local to the sequence an entry is in.
 | Term | Meaning |
 |---|---|
 | **Start** | The entry's position, before its delay. References to an entry's start resolve to it. |
-| **Span duration** | From the start to where the entry ends. An infinite repeat counts only its first iteration, since infinity can't be referred to. An entry with no elements has 0.<br>• **An animation's:** its latest staggered delay, then its iterations and their repeat delays, as its `RepeatDescriptor` gives them, so one without duration counts no repeat delays.<br>• **A sequence's:** until the latest end among its entries. |
-| **End** | The start plus the span duration. References to an entry's end resolve to it. |
-| **Duration** | For positions, an entry's `EntrySpan` runs from its start for its span duration. The inserted entry's doesn't depend on its position, so it's known before the entry is placed. |
+| **Reference duration** | From the start to where the entry ends. An infinite repeat counts only its first iteration, since infinity can't be referred to. An entry with no elements has 0.<br>• **An animation's:** its latest staggered delay, then its iterations and their repeat delays, as its `RepeatDescriptor` gives them, so one without duration counts no repeat delays.<br>• **A sequence's:** until the latest end among its entries. |
+| **End** | The start plus the reference duration. References to an entry's end resolve to it. |
+| **Duration** | For positions, an entry's `Span` runs from its start for its reference duration. The inserted entry's doesn't depend on its position, so it's known before the entry is placed. |
 | **Previous entry** | The entry added just before. For the first entry, it's the start of the sequence, with a duration of 0. |
 | **Everything so far** | From 0 to the latest end among the earlier entries, or 0 with none. |
 
@@ -702,7 +702,7 @@ The plan walks the definition tree, which holds every target and value, so nothi
 
 ### 5.1 Targets
 
-The plan resolves each animation definition's target as it reaches it, through the `TargetsResolver` it's given. The animator's resolves each target once per `animate`, however many times a sequence plays it, through `resolveTargets` (§3.3): a selector is queried in the scope, and a function is called with it. Elements are deduplicated. An animation with no elements has a span duration of 0, so it starts and ends at its position, and the entries after it are placed against that, but it has no plan (§5.3).
+The plan resolves each animation definition's target as it reaches it, through the `TargetsResolver` it's given. The animator's resolves each target once per `animate`, however many times a sequence plays it, through `resolveTargets` (§3.3): a selector is queried in the scope, and a function is called with it. Elements are deduplicated. An animation with no elements has a reference duration of 0, so it starts and ends at its position, and the entries after it are placed against that, but it has no plan (§5.3).
 
 ### 5.2 Values
 
@@ -741,13 +741,13 @@ Leaves also keep `targets` (`StaggeredTarget`): each element as `target`, with t
 **Entries without targets.** An animation without targets has no plan, and a sequence has none when none of its entries has one, at any depth. A sequence's plan leaves out the entries that have none. They still keep their positions, so the entries after them are placed as before, and the sequence's iteration duration still runs to their ends.
 
 **Planning in steps.** Each planner plans one entry, once:
-1. `of(definition, targetsResolver)` takes everything that doesn't depend on where the entry sits. An `AnimationPlanner` resolves the targets, each target's own delay, and the span duration, and keeps the timing, whose duration, easing and repeats are already resolved. A `SequencePlanner` makes and positions the planners of its whole subtree, as below.
-2. `position(descriptor, entrySpans)` resolves the position among the entries before it, within its sequence, clamped to 0. A `=%` offset reads the planner's own span duration, which is already known.
+1. `of(definition, targetsResolver)` takes everything that doesn't depend on where the entry sits. An `AnimationPlanner` resolves the targets, each target's own delay, and the reference duration, and keeps the timing, whose duration, easing and repeats are already resolved. A `SequencePlanner` makes and positions the planners of its whole subtree, as below.
+2. `position(descriptor, referenceSpans)` resolves the position among the entries before it, within its sequence, clamped to 0. A `=%` offset reads the planner's own reference duration, which is already known.
 3. `plan(sequenceStart)` gives the node, or `undefined` when it has none, its `start` its position after `sequenceStart`, where its sequence starts (0 for the outermost definition). Where a sequence starts is only known once it's positioned in the one around it, which happens after its own `of`, so this is the step that turns positions into starts.
 
-The span duration (§2.7.2) stays in the planners: only placing the entries after an entry and working out its sequence's durations need it, and both happen while planning. It reads the timing's `RepeatDescriptor` (`iterationsSpanDuration`), so it always agrees with the repeats the plan gives.
+The reference duration (§2.7.2) stays in the planners: only placing the entries after an entry and working out its sequence's durations need it, and both happen while planning. It reads the timing's `RepeatDescriptor` (`calcReferenceDuration`), so it always agrees with the repeats the plan gives.
 
-`SequencePlanner.of` makes a planner for each entry, positions it and keeps its `span` for the positions after it. A sequence's iteration duration and span duration are both the latest end among its entries. Its `plan(sequenceStart)` plans each entry from its own `start`, and keeps the ones that have a plan.
+`SequencePlanner.of` makes a planner for each entry, positions it and keeps its `referenceSpan` for the positions after it. A sequence's iteration duration and reference duration are both the latest end among its entries. Its `plan(sequenceStart)` plans each entry from its own `start`, and keeps the ones that have a plan.
 
 ### 5.4 Tracks
 
@@ -1030,7 +1030,6 @@ Values are tested through stand-in `CSSValueResolver`s that align numbers with `
 
 ## 8. Limitations and open work
 
-- **Repeats without duration.** An entry without duration plays once on its track (§5.4), but its span duration (§2.7.2) still counts its repeat delays.
 - **Timed tweens** exist as `TimedTweenTiming`, which is internal and can't be placed in a sequence or played yet.
 - **The before flag.** Only an effect's own easing gets WAAPI's before flag. So an effect whose first keyframe starts with a jump, such as jump-start steps split by a stop or a reversed jump-end, shows the jumped value during its backwards fill.
 - **Sequences have no playback options:** no delay, stagger or repeats. Merging a repeating sequence's entries (§5.4) is in place, but nothing reaches it until sequences repeat.
