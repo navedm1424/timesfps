@@ -13,16 +13,17 @@ import type {TransitionOptions} from "../src/transition.ts";
 import type {Seconds} from "../src/types.ts";
 import {lerp} from "../src/utils/math.ts";
 import {sortedEntriesOf} from "../src/utils/records.ts";
-import type {NativeAnimationEffect, NativeKeyframe} from "../src/waapi/native-effects.ts";
+import type {NativeKeyframe} from "../src/waapi/keyframes.ts";
+import type {NativeEffect} from "../src/waapi/native-effect-builder.ts";
 import {cssEasingOf, type NativeEasing} from "../src/waapi/native-easing.ts";
 import {alignNumbers, type CSSValueResolver} from "../src/waapi/css-values.ts";
 import {naming, type EntryPath} from "../src/naming.ts";
 import {TrackItemBuilder} from "../src/tracks/track-entry-builder.ts";
-import {layer, resolveHolds} from "../src/tracks/track-layering.ts";
+import {dropCoveredEntries, resolveHolds} from "../src/tracks/track-layering.ts";
 import {type Track, type Tracks, TracksResolver} from "../src/tracks/tracks.ts";
 import type {TrackGroup, TrackItem} from "../src/tracks/track-entries.ts";
 import {TweenStops} from "../src/tween-stops.ts";
-import {type AnimationTracks, NativeEffectsResolver} from "../src/waapi/tracks.ts";
+import {type NativeEffects, NativeEffectsResolver} from "../src/waapi/native-effects.ts";
 
 const element = {} as Element;
 const scope = {} as Element;
@@ -87,7 +88,7 @@ function sequenceEndOf(
     return sequencePlanOf(measuring, {...inMeasured(valuesByPath), next: line}, inMeasured(elementsByPath)).entries.get('next')!.start;
 }
 
-function animationTracksOf(timing: AnimationTiming, values: AnimationValues = line, elements = [element], resolver = numericResolver): AnimationTracks {
+function animationTracksOf(timing: AnimationTiming, values: AnimationValues = line, elements = [element], resolver = numericResolver): NativeEffects {
     return NativeEffectsResolver.resolve(new TracksResolver(animationPlanOf(timing, elements, values), naming).resolve(), resolver);
 }
 
@@ -96,15 +97,15 @@ function sequenceTracksOf(
     valuesByPath: { [path: EntryPath]: AnimationValues },
     elementsByPath: { [path: EntryPath]: Element[] } = {},
     resolver = numericResolver
-): AnimationTracks {
+): NativeEffects {
     return NativeEffectsResolver.resolve(new TracksResolver(sequencePlanOf(timing, valuesByPath, elementsByPath), naming).resolve(), resolver);
 }
 
-function timingOf({delay, duration, iterations, direction, fill}: NativeAnimationEffect) {
+function timingOf({delay, duration, iterations, direction, fill}: NativeEffect) {
     return {delay, duration, iterations, direction, fill};
 }
 
-function keyframesOf(effect: NativeAnimationEffect): number[][] {
+function keyframesOf(effect: NativeEffect): number[][] {
     return effect.keyframes.map(({offset, value}) => [offset, Number(value)]);
 }
 
@@ -135,7 +136,7 @@ function keyframesValueAt(keyframes: readonly NativeKeyframe[], progress: number
 }
 
 /** The effect's value at `time`, or undefined when it has none then, as a browser computes it. */
-function effectValueAt(effect: NativeAnimationEffect, time: number): number | undefined {
+function effectValueAt(effect: NativeEffect, time: number): number | undefined {
     const {delay, duration, iterations, direction, fill} = effect;
     const elapsed = time - delay;
     let iteration: number;
@@ -157,7 +158,7 @@ function effectValueAt(effect: NativeAnimationEffect, time: number): number | un
 }
 
 /** The value the track shows at `time`: the last effect that has one, as later effects show over earlier ones. */
-function trackValueAt(effects: readonly NativeAnimationEffect[], time: number): number | undefined {
+function trackValueAt(effects: readonly NativeEffect[], time: number): number | undefined {
     let value: number | undefined;
     for (const effect of effects) value = effectValueAt(effect, time) ?? value;
     return value;
@@ -409,7 +410,7 @@ const transitions: [string, TransitionOptions, number][] = [
  * Compares the track with the defined value from the track's first start on, at times that miss the round ones, where steps and repeats jump.
  * Before it, a fill backwards shows a jump right at the start as already made, which only an effect's own steps easing avoids.
  */
-function expectTrackToFollow(effects: readonly NativeAnimationEffect[], definedAt: (time: number) => number, tolerance: number, span: number, label = '') {
+function expectTrackToFollow(effects: readonly NativeEffect[], definedAt: (time: number) => number, tolerance: number, span: number, label = '') {
     const sampleCount = 1999;
     const firstStart = Math.min(...effects.map(({delay}) => delay));
     for (let sample = 0; sample < sampleCount; sample++) {
@@ -443,7 +444,7 @@ describe("NativeEffectsResolver values", () => {
 });
 
 describe("NativeEffectsResolver sequences", () => {
-    const sample = (effects: readonly NativeAnimationEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
+    const sample = (effects: readonly NativeEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
 
     it("keeps entries that don't overlap apart, in the order they start, each holding after it and only the first before it", () => {
         const sequence = SequenceTiming.builder()
@@ -550,15 +551,24 @@ describe("NativeEffectsResolver sequences", () => {
 });
 
 describe("NativeEffectsResolver missing values", () => {
-    const sample = (effects: readonly NativeAnimationEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
+    const sample = (effects: readonly NativeEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
 
-    it("ends an entry without a value at 1 on the start of the entry after it", () => {
+    it("ends an entry without a value at 1 and nothing under it on the property's current value, whatever comes after it", () => {
         const sequence = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 1}), 'a')
             .add(AnimationTiming.of({duration: 1}), 'b', '+0.5')
             .build();
         const [a] = sequenceTracksOf(sequence, {a: {x: {0: 0}}, b: {x: {0: 5, 1: 6}}}).get(element)!.x!;
-        expect(keyframesOf(a!)).toEqual([[0, 0], [1, 5]]);
+        expect(keyframesOf(a!)).toEqual([[0, 0], [1, 0.25]]);
+    });
+
+    it("ends an entry without a value at 1 on the end an entry under it holds there", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a')
+            .add(AnimationTiming.of({duration: 1}), 'b', 0.5)
+            .build();
+        const [, b] = sequenceTracksOf(sequence, {a: line, b: {x: {0: 3}}}).get(element)!.x!;
+        expect(keyframesOf(b!)).toEqual([[0, 3], [1, 1]]);
     });
 
     it("starts an entry over another without a value at 0 from the value of the one under it there", () => {
@@ -597,6 +607,16 @@ describe("NativeEffectsResolver missing values", () => {
         expect(sample(effects, [0, 2])).toEqual([0.25, 0.25]);
     });
 
+    it("starts an entry from the current value when the closest one to end before it doesn't hold its end", () => {
+        const sequence = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 2}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 0)
+            .add(AnimationTiming.of({duration: 0}), 'n', 0)
+            .build();
+        const [a] = sequenceTracksOf(sequence, {a: {x: {1: 1}}, b: line, n: {x: {0: 7, 1: 9}}}).get(element)!.x!;
+        expect(keyframesOf(a!)[0]).toEqual([0, 0.25]);
+    });
+
     it("starts an entry without a value at 0 and nothing before it from the property's current value", () => {
         const effects = animationTracksOf(AnimationTiming.of({duration: 1}), {x: {1: 1}}).get(element)!.x!;
         expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 1]]);
@@ -604,7 +624,7 @@ describe("NativeEffectsResolver missing values", () => {
 });
 
 describe("NativeEffectsResolver repeating sequences", () => {
-    const sample = (effects: readonly NativeAnimationEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
+    const sample = (effects: readonly NativeEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
     const effectsOf = (timing: SequenceTiming, repeatsByPath: { [path: EntryPath]: SequenceRepeats }, valuesByPath: { [path: EntryPath]: AnimationValues }) =>
         NativeEffectsResolver.resolve(new TracksResolver(withRepeats(sequencePlanOf(timing, valuesByPath), repeatsByPath), naming).resolve(), numericResolver).get(element)!.x!;
 
@@ -617,6 +637,25 @@ describe("NativeEffectsResolver repeating sequences", () => {
         expect(effects.map(effect => ({name: effect.name, ...timingOf(effect)})))
             .toEqual([{name: 's>a+s>b', delay: 0, duration: 2.5, iterations: 2, direction: 'normal', fill: 'both'}]);
         expect(sample(effects, [0.5, 1.25, 2, 3, 3.75, 4.5, 6])).toEqual(closeTo([[0.5, 1, 5.5, 0.5, 1, 5.5, 6]])[0]);
+    });
+
+    it("starts an entry of a group without a value at 0 from the end an entry before it in the group holds", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'a', 0)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
+            .build();
+        const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': {x: {0: 0, 1: 5}}, 's>b': {x: {1: 6}}});
+        expect(sample(effects, [1.25, 2])).toEqual(closeTo([[5, 5.5]])[0]);
+    });
+
+    it("gives what goes on with an entry that repeats forever the values underneath it, not the ones its copy in the group takes", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'fade', 0)
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'pulse', 1)
+            .build();
+        const [continuation, group] = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>fade': {x: {0: 0, 1: 0.2}}, 's>pulse': {x: {1: 0.5}}});
+        expect(keyframesOf(continuation!)).toEqual([[0, 0.25], [1, 0.5]]);
+        expect(sample([group!], [1])).toEqual([0.2]);
     });
 
     it("flips a mirrored sequence's whole iteration", () => {
@@ -638,13 +677,13 @@ describe("NativeEffectsResolver repeating sequences", () => {
         expect(sample(effects, [0.25, 0.75, 1.5, 2.25, 2.75, 3.5])).toEqual(closeTo([[0.125, 5.5, 0.75, 0.125, 5.5, 0.75]])[0]);
     });
 
-    it("ends an entry in a repeating sequence without a value at 1 on the start of the next one in it", () => {
+    it("ends an entry in a repeating sequence without a value at 1 and nothing under it on the property's current value", () => {
         const s = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 1}), 'a', 0)
             .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
             .build();
         const effects = effectsOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {0: 5, 1: 6}}});
-        expect(sample(effects, [0.5, 1.25, 3])).toEqual(closeTo([[2.5, 5, 2.5]])[0]);
+        expect(sample(effects, [0.5, 1.25, 3])).toEqual(closeTo([[0.125, 0.25, 0.125]])[0]);
     });
 
     it("starts an entry in a repeating sequence without a value at 0 from the value of the one under it there", () => {
@@ -665,7 +704,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
         expect(sample(effects, [0.5, 1.25, 2])).toEqual(closeTo([[0.125, 0.25, 3.125]])[0]);
     });
 
-    it("ends a repeating sequence's iteration without a value on the start of the entry after the sequence", () => {
+    it("ends a repeating sequence's iteration without a value and nothing under it on the property's current value, whatever comes after the sequence", () => {
         const s = SequenceTiming.builder().add(AnimationTiming.of({duration: 1}), 'a').build();
         const sequence = SequenceTiming.builder()
             .add(s, 's', 0)
@@ -673,7 +712,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .build();
         const effects = effectsOf(sequence, {s: {repeatCount: 1}}, {'s>a': {x: {0: 0}}, n: {x: {0: 5, 1: 6}}});
         expect(effects.map(({name}) => name)).toEqual(['s>a', 'n']);
-        expect(sample(effects, [0.5, 1.5, 2.5])).toEqual(closeTo([[2.5, 2.5, 5]])[0]);
+        expect(sample(effects, [0.5, 1.5, 2.5])).toEqual(closeTo([[0.125, 0.125, 0.25]])[0]);
     });
 
     it("plays all the repeats of a repeating sequence inside a repeating sequence in each of the outer one's iterations", () => {
@@ -730,7 +769,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .build();
         const effects = effectsOf(sequence, {s: {repeatCount: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
         expect(effects.map(({name}) => name)).toEqual(['s>i', 's>a+s>i']);
-        expect(keyframesOf(effects[0]!)).toEqual([[0, 6], [1, 10]]);
+        expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 10]]);
     });
 
     it("takes nothing for what goes on under a repeating sequence from an entry the sequence hides, where that entry ends before it", () => {
@@ -744,7 +783,7 @@ describe("NativeEffectsResolver repeating sequences", () => {
             .build();
         const effects = effectsOf(sequence, {s: {repeatCount: 1}}, {e: {x: {0: 2, 1: 6}}, 's>a': {x: {0: 5, 1: 6}}, 's>i': {x: {1: 10}}});
         expect(effects.map(({name}) => name)).toEqual(['s>i', 's>a+s>i']);
-        expect(keyframesOf(effects[0]!)).toEqual([[0, 6], [1, 10]]);
+        expect(keyframesOf(effects[0]!)).toEqual([[0, 0.25], [1, 10]]);
     });
 
     it("layers a repeating sequence over the entries outside it as one entry, repeating as the sequence does", () => {
@@ -839,6 +878,19 @@ describe("TracksResolver", () => {
         ]);
     });
 
+    it("leaves out what goes on with an entry of a repeating group when an entry over it covers that", () => {
+        const s = SequenceTiming.builder()
+            .add(AnimationTiming.of({duration: 1}), 'fade', 0)
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'pulse', 1)
+            .build();
+        const sequence = SequenceTiming.builder()
+            .add(s, 's', 0)
+            .add(AnimationTiming.of({duration: 1}, {repeat: Infinity}), 'x', 0.5)
+            .build();
+        const track = trackOf(sequence, {s: {repeatCount: 1}}, {'s>fade': line, 's>pulse': line, x: line});
+        expect(track.map(({name}) => name)).toEqual(['s>fade+s>pulse', 'x']);
+    });
+
     it("holds an entry of a group after it ends only when none under it runs there", () => {
         const s = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 2}), 'a', 0)
@@ -851,13 +903,13 @@ describe("TracksResolver", () => {
         ]);
     });
 
-    it("gives an entry of a group the values it's missing from the entries around it in the group", () => {
+    it("leaves an entry's missing values as null", () => {
         const s = SequenceTiming.builder()
             .add(AnimationTiming.of({duration: 1}), 'a', 0)
-            .add(AnimationTiming.of({duration: 1}), 'b', 1.5)
+            .add(AnimationTiming.of({duration: 1}), 'b', 1)
             .build();
         const [group] = trackOf(SequenceTiming.builder().add(s, 's').build(), {s: {repeatCount: 1}}, {'s>a': {x: {0: 0}}, 's>b': {x: {0: 5, 1: 6}}});
-        expect(((group as TrackGroup).entries[0] as TrackItem).stops).toEqual([{offset: 0, value: 0}, {offset: 1, value: 5}]);
+        expect(((group as TrackGroup).entries[0] as TrackItem).stops).toEqual([{offset: 0, value: 0}, {offset: 1, value: null}]);
     });
 });
 
@@ -873,7 +925,7 @@ describe("NativeEffectsResolver holds", () => {
     });
 
     it("throws for a run that holds before and starts after another", () => {
-        expect(() => resolve([itemOf('a', 0, true), itemOf('b', 1, true)])).toThrow("Hold only the first run before.");
+        expect(() => resolve([itemOf('a', 0, true), itemOf('b', 1, true)])).toThrow("Hold only the first effect before.");
     });
 
     it("throws for an entry of a repeating sequence that holds before", () => {
@@ -882,12 +934,12 @@ describe("NativeEffectsResolver holds", () => {
     });
 });
 
-describe("layer and resolveHolds", () => {
+describe("dropCoveredEntries and resolveHolds", () => {
     const builderOf = (name: string, start: Seconds, iterationDuration: Seconds) =>
         TrackItemBuilder.of(name, {start, iterationDuration, repeatCount: 0, repeatDelay: 0}, linear, TweenStops.of('x', {0: 0, 1: 1}));
 
     it("holds a run after it ends when the one under its end never shows", () => {
-        const showing = layer([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
+        const showing = dropCoveredEntries([builderOf('e', 1, 2), builderOf('b', 0, 2), builderOf('c', 0.5, 2.5)]);
         resolveHolds(showing);
         expect(showing.map(builder => builder.build()).map(({name, holdsAfter}) => ({name, holdsAfter}))).toEqual([
             {name: 'b', holdsAfter: true},
@@ -899,7 +951,7 @@ describe("layer and resolveHolds", () => {
 describe("NativeEffectsResolver values passed through", () => {
     /** Takes any text, and has numbers only for plain numbers; colours have none. */
     const textResolver: CSSValueResolver = {...numericResolver, currentValueOf: () => 'none'};
-    const textsOf = (effect: NativeAnimationEffect) => effect.keyframes.map(({value}) => value);
+    const textsOf = (effect: NativeEffect) => effect.keyframes.map(({value}) => value);
     const resolvedWith = (timing: AnimationTiming, values: AnimationValues) => animationTracksOf(timing, values, [element], textResolver).get(element)!;
 
     it("passes values through as text when the easing is on the effect", () => {

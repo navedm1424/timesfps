@@ -6,5 +6,5 @@ export {plainNumberResolver} from "./waapi/css-values.ts";
 export {plan} from "./plan.ts";
 export {naming} from "./naming.ts";
 export {TracksResolver} from "./tracks/tracks.ts";
-export {NativeEffectsResolver} from "./waapi/tracks.ts";
-export type {NativeKeyframe} from "./waapi/native-effects.ts";
+export {NativeEffectsResolver} from "./waapi/native-effects.ts";
+export type {NativeKeyframe} from "./waapi/keyframes.ts";

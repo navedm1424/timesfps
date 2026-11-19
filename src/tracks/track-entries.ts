@@ -1,9 +1,7 @@
+import type {CSSValue} from "../dom/mapping.ts";
 import type {Easing} from "../easing.ts";
 import type {RepeatDescriptor} from "../playback-options.ts";
 import type {Progress, Seconds} from "../types.ts";
-import {partitionPoint} from "../utils/collections.ts";
-import {clamp, invLerp} from "../utils/math.ts";
-import {type InterpolationToken, type TrackValue, valueBetween} from "./track-values.ts";
 
 /** When a run starts, how long each of its iterations lasts, and how it repeats; one without duration doesn't repeat. */
 export interface TrackEntry extends RepeatDescriptor {
@@ -22,25 +20,10 @@ export function repeatsForever({repeatCount}: TrackEntry): boolean {
     return repeatCount === Infinity;
 }
 
-export interface TrackStop<Value> {
+/** A value at an offset of an easing's progress: a given one, or `null` for the value underneath, left for the stage that plays the track to give; or, once it's given, CSS text. */
+export interface TrackStop<Value = CSSValue | null> {
     offset: Progress;
     value: Value;
-}
-
-/**
- * The value of stops, in order, at `progress`: the stop's own value at a stop; otherwise the value between the stops around it,
- * which runs linearly with the progress, or between the nearest two past either end.
- */
-export function valueAtProgress<Value>(stops: readonly TrackStop<Value>[], progress: Progress): Value | InterpolationToken<Value> {
-    const atOrAfterIndex = partitionPoint(stops, stop => stop.offset >= progress);
-    const stopThere = stops[atOrAfterIndex];
-    if (stopThere?.offset === progress) return stopThere.value;
-    if (stops.length === 1) return stops[0]!.value;
-
-    const endIndex = clamp(atOrAfterIndex, 1, stops.length - 1);
-    const start = stops[endIndex - 1]!;
-    const end = stops[endIndex]!;
-    return valueBetween(start.value, end.value, invLerp(start.offset, end.offset, progress));
 }
 
 /** What an animation leaf plays on one property of one target: its run through its stops, by its easing. */
@@ -48,8 +31,8 @@ export interface TrackItem extends TrackEntry {
     type: 'item';
     name: string | undefined;
     easing: Easing;
-    /** Its values at offsets of its easing's progress, in order, as `valueAtProgress` reads them. */
-    stops: readonly TrackStop<TrackValue>[];
+    /** Its values at offsets of its easing's progress, in order. */
+    stops: readonly TrackStop[];
     /** Whether it holds the value it starts on before it starts. */
     holdsBefore: boolean;
     /** Whether it holds the value it ends on once it's done. */

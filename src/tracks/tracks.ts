@@ -6,7 +6,7 @@ import type {Seconds} from "../types.ts";
 import {getOrInsertComputed} from "../utils/collections.ts";
 import type {AnimationPlan, Plan, SequencePlan} from "../plan.ts";
 import {TrackGroupBuilder, TrackItemBuilder, type TrackEntryBuilder} from "./track-entry-builder.ts";
-import {layer, resolveHolds} from "./track-layering.ts";
+import {dropCoveredEntries, resolveHolds} from "./track-layering.ts";
 import {repeats, repeatsForever, type TrackEntry, type TrackGroup, type TrackItem} from "./track-entries.ts";
 
 /** Its entries in the order they show over each other in: by when they start, then in the order they're declared; a group's continuations of what in it repeats forever come right under it. */
@@ -146,7 +146,7 @@ class TrackBuilder {
 
         const continuations: ContinuationsByBuilder = new Map();
         const builders = this.buildersOf(this.rootEntries, continuations).toSorted(byStart);
-        const showing = layer(builders.flatMap(builder => [...continuations.get(builder) ?? [], builder]));
+        const showing = dropCoveredEntries(builders.flatMap(builder => [...continuations.get(builder) ?? [], builder]));
         resolveHolds(showing);
         return showing.map(builder => builder.build());
     }
@@ -182,7 +182,7 @@ class TrackBuilder {
         const builders = this.buildersOf(entries, continuations).toSorted(byStart);
         if (!builders.length) return undefined;
 
-        const showing = layer(builders.map(builder => builder.ends ? builder : builder.withoutRepeats()));
+        const showing = dropCoveredEntries(builders.map(builder => builder.ends ? builder : builder.withoutRepeats()));
         resolveHolds(showing, {firstHoldsBefore: false});
         const group = TrackGroupBuilder.of(this.nameOf(entries), timing, showing);
         if (!repeatsForever(timing))

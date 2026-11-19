@@ -135,10 +135,13 @@ animation('.card', {
 | `{0: 0}` or `[0, null]` | from 0, to the value underneath |
 | `[null, 1]` | from the value underneath, to 1, the same as `1` |
 
-- **The value underneath** comes from the animations next to this one, on the same property of the same element:
-    - At the start, it's the value the animation before it ends on. At the end, it's the value the one after it starts from.
-    - When this animation starts or ends while another one runs under it ([Overlaps](#overlaps)), it's that one's nearest key: the last it passed before the start, or the next it reaches after the end.
-    - With none of these, or when that value is missing too, it's the property's current value when you call `animate()`.
+- **The value underneath** is what shows under this animation as it starts, or as it ends, from the animations it shows over on the same property of the same element ([Overlaps](#overlaps)):
+    - one still running then, at its value then;
+    - or one that has ended and holds its end value.
+    - When several do, it's the one that shows on top of them.
+    - With none of these, it's the property's current value when you call `animate()`.
+- **The animation after this one never gives it a value.** To end where the next one starts, give that value as this one's end.
+- **An animation that repeats forever** never ends, so its missing end is what's held under it once the animations under it are done, or the current value.
 - `null` at the start or the end stands for the value underneath. Between them, it's skipped.
 - Keys outside 0–1 throw.
 

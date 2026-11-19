@@ -7,7 +7,7 @@ import type {Definition} from "../sequence.ts";
 import {AnimationControls} from "./controls.ts";
 import {domValueResolver, keyframePropertyOf} from "./css-values.ts";
 import {cssEasingOf} from "./native-easing.ts";
-import {type AnimationTracks, NativeEffectsResolver} from "./tracks.ts";
+import {type NativeEffects, NativeEffectsResolver} from "./native-effects.ts";
 
 /** An animator whose selectors and target functions look for elements in the scope given. */
 export function animator(options: AnimatorOptions = {}): Animator {
@@ -38,13 +38,13 @@ export class WAAPIAnimator extends Animator {
         }
         const definitionPlan = plan(definition, targetsResolver);
         if (!definitionPlan) return new AnimationControls([]);
-        const tracks = NativeEffectsResolver.resolve(new TracksResolver(definitionPlan, naming).resolve(), domValueResolver);
-        return new AnimationControls(WAAPIAnimator.nativeAnimationsOf(tracks));
+        const effects = NativeEffectsResolver.resolve(new TracksResolver(definitionPlan, naming).resolve(), domValueResolver);
+        return new AnimationControls(WAAPIAnimator.nativeAnimationsOf(effects));
     }
 
-    /** Creates the effects in their tracks' order, which is the order they show over each other in; each is named by its track run and its property. */
-    private static nativeAnimationsOf(tracks: AnimationTracks): Animation[] {
-        return [...tracks].flatMap(([element, effectsByProperty]) => Object.entries(effectsByProperty).flatMap(([property, effects]) => {
+    /** Creates the effects in their tracks' order, which is the order they show over each other in; each is named by its track entry and its property. */
+    private static nativeAnimationsOf(effects: NativeEffects): Animation[] {
+        return [...effects].flatMap(([element, effectsByProperty]) => Object.entries(effectsByProperty).flatMap(([property, effects]) => {
             const keyframeProperty = keyframePropertyOf(property);
             return effects.map(({keyframes, easing, delay, duration, iterations, direction, fill, name}) => {
                 const animation = element.animate(

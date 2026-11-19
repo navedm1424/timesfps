@@ -18,7 +18,12 @@ export class AnimationDefinition {
 
     /** @internal */
     constructor(target: Target, values: AnimationValues, timing: AnimationTiming | AnimationTimingOptions) {
-        this.stopsByProperty = Object.fromEntries(Object.entries(values).map(([property, rawStops]) => [property, TweenStops.of(property, rawStops)]));
+        this.stopsByProperty = Object.fromEntries(Object
+            .entries(values)
+            .map(([property, rawStops]) =>
+                [property, TweenStops.of(property, rawStops)]
+            )
+        );
         this.timing = timing instanceof AnimationTiming ? timing : AnimationTiming.of(timing);
         this.target = target;
     }

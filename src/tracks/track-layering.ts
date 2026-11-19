@@ -1,4 +1,3 @@
-import {resolveMissingValues} from "./missing-values.ts";
 import type {TrackEntryBuilder} from "./track-entry-builder.ts";
 
 /** The builders that show once `top` is laid over them: the ones it covers never show. */
@@ -6,14 +5,9 @@ function layOver(showing: readonly TrackEntryBuilder[], top: TrackEntryBuilder):
     return [...showing.filter(below => !top.covers(below)), top];
 }
 
-/**
- * The builders that show once laid over each other in the order they're given, each over the ones before it, in that order.
- * They take their missing values from each other; a missing start that nothing ends by, or a missing end that nothing starts after, stays missing.
- */
-export function layer(builders: readonly TrackEntryBuilder[]): TrackEntryBuilder[] {
-    const showing = builders.reduce<TrackEntryBuilder[]>(layOver, []);
-    resolveMissingValues(showing);
-    return showing;
+/** The builders that show once laid over each other in the order they're given, each over the ones before it, in that order. */
+export function dropCoveredEntries(builders: readonly TrackEntryBuilder[]): TrackEntryBuilder[] {
+    return builders.reduce<TrackEntryBuilder[]>(layOver, []);
 }
 
 /**
