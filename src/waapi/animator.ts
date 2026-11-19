@@ -5,7 +5,7 @@ import {naming} from "../naming.ts";
 import {TracksResolver} from "../tracks/tracks.ts";
 import type {Definition} from "../sequence.ts";
 import {AnimationControls} from "./controls.ts";
-import {domValueResolver, keyframePropertyOf} from "./css-values.ts";
+import {keyframePropertyOf} from "./css-values.ts";
 import {cssEasingOf} from "./native-easing.ts";
 import {type NativeEffects, NativeEffectsResolver} from "./native-effects.ts";
 
@@ -38,7 +38,7 @@ export class WAAPIAnimator extends Animator {
         }
         const definitionPlan = plan(definition, targetsResolver);
         if (!definitionPlan) return new AnimationControls([]);
-        const effects = NativeEffectsResolver.resolve(new TracksResolver(definitionPlan, naming).resolve(), domValueResolver);
+        const effects = NativeEffectsResolver.resolve(new TracksResolver(definitionPlan, naming).resolve());
         return new AnimationControls(WAAPIAnimator.nativeAnimationsOf(effects));
     }
 

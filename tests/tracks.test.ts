@@ -1,4 +1,4 @@
-import {describe, expect, it} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {AnimationTiming} from "../src/animation-timing.ts";
 import {animation} from "../src/animation.ts";
 import {type AnimationValues, resolveTargets} from "../src/dom/mapping.ts";
@@ -16,7 +16,6 @@ import {sortedEntriesOf} from "../src/utils/records.ts";
 import type {NativeKeyframe} from "../src/waapi/keyframes.ts";
 import type {NativeEffect} from "../src/waapi/native-effect-builder.ts";
 import {cssEasingOf, type NativeEasing} from "../src/waapi/native-easing.ts";
-import {alignNumbers, type CSSValueResolver} from "../src/waapi/css-values.ts";
 import {naming, type EntryPath} from "../src/naming.ts";
 import {TrackItemBuilder} from "../src/tracks/track-entry-builder.ts";
 import {dropCoveredEntries, resolveHolds} from "../src/tracks/track-layering.ts";
@@ -29,13 +28,10 @@ const element = {} as Element;
 const scope = {} as Element;
 const line = {x: {0: 0, 1: 1}};
 
-/** Values are plain numbers without a unit, and every property is 0.25 now; any text is a value, and computes as it is. */
-const numericResolver: CSSValueResolver = {
-    textOf: (_property, value) => String(value),
-    currentValueOf: () => '0.25',
-    validate: () => {},
-    alignedNumbersOf: (_element, property, texts) => alignNumbers(property, texts, text => text)
-};
+/** The page values come from: it takes any value, a bare number has no unit, and every property is `currentValue` now. */
+let currentValue = '0.25';
+vi.stubGlobal('CSS', {supports: () => true, registerProperty: () => {}});
+vi.stubGlobal('getComputedStyle', () => ({getPropertyValue: () => currentValue}));
 
 function numericStopsOf(values: { [offset: number]: number }): NumericStops {
     return new NumericStops(sortedEntriesOf(values).map(([offset, value]) => ({offset, value})));
@@ -88,17 +84,16 @@ function sequenceEndOf(
     return sequencePlanOf(measuring, {...inMeasured(valuesByPath), next: line}, inMeasured(elementsByPath)).entries.get('next')!.start;
 }
 
-function animationTracksOf(timing: AnimationTiming, values: AnimationValues = line, elements = [element], resolver = numericResolver): NativeEffects {
-    return NativeEffectsResolver.resolve(new TracksResolver(animationPlanOf(timing, elements, values), naming).resolve(), resolver);
+function animationTracksOf(timing: AnimationTiming, values: AnimationValues = line, elements = [element]): NativeEffects {
+    return NativeEffectsResolver.resolve(new TracksResolver(animationPlanOf(timing, elements, values), naming).resolve());
 }
 
 function sequenceTracksOf(
     timing: SequenceTiming,
     valuesByPath: { [path: EntryPath]: AnimationValues },
-    elementsByPath: { [path: EntryPath]: Element[] } = {},
-    resolver = numericResolver
+    elementsByPath: { [path: EntryPath]: Element[] } = {}
 ): NativeEffects {
-    return NativeEffectsResolver.resolve(new TracksResolver(sequencePlanOf(timing, valuesByPath, elementsByPath), naming).resolve(), resolver);
+    return NativeEffectsResolver.resolve(new TracksResolver(sequencePlanOf(timing, valuesByPath, elementsByPath), naming).resolve());
 }
 
 function timingOf({delay, duration, iterations, direction, fill}: NativeEffect) {
@@ -626,7 +621,7 @@ describe("NativeEffectsResolver missing values", () => {
 describe("NativeEffectsResolver repeating sequences", () => {
     const sample = (effects: readonly NativeEffect[], times: number[]) => times.map(time => trackValueAt(effects, time));
     const effectsOf = (timing: SequenceTiming, repeatsByPath: { [path: EntryPath]: SequenceRepeats }, valuesByPath: { [path: EntryPath]: AnimationValues }) =>
-        NativeEffectsResolver.resolve(new TracksResolver(withRepeats(sequencePlanOf(timing, valuesByPath), repeatsByPath), naming).resolve(), numericResolver).get(element)!.x!;
+        NativeEffectsResolver.resolve(new TracksResolver(withRepeats(sequencePlanOf(timing, valuesByPath), repeatsByPath), naming).resolve()).get(element)!.x!;
 
     it("merges a repeating sequence's entries into one entry that repeats as the sequence does, each end held until the next entry starts", () => {
         const s = SequenceTiming.builder()
@@ -915,10 +910,10 @@ describe("TracksResolver", () => {
 
 describe("NativeEffectsResolver holds", () => {
     const itemOf = (name: string, start: Seconds, holdsBefore: boolean): TrackItem => ({
-        type: 'item', name, start, iterationDuration: 1, repeatCount: 0, repeatDelay: 0, easing: linear,
+        type: 'item', name, start, end: start + 1, iterationDuration: 1, repeatCount: 0, repeatDelay: 0, easing: linear,
         stops: [{offset: 0, value: 0}, {offset: 1, value: 1}], holdsBefore, holdsAfter: true
     });
-    const resolve = (track: Track) => NativeEffectsResolver.resolve(new Map([[element, {x: track}]]) satisfies Tracks, numericResolver);
+    const resolve = (track: Track) => NativeEffectsResolver.resolve(new Map([[element, {x: track}]]) satisfies Tracks);
 
     it("holds every run before that starts with the first", () => {
         expect(resolve([itemOf('a', 0, true), itemOf('b', 0, true)]).get(element)!.x!.map(({fill}) => fill)).toEqual(['both', 'both']);
@@ -929,7 +924,7 @@ describe("NativeEffectsResolver holds", () => {
     });
 
     it("throws for an entry of a repeating sequence that holds before", () => {
-        const group: TrackGroup = {type: 'group', name: 's', start: 0, iterationDuration: 1, repeatCount: 1, repeatDelay: 0, entries: [itemOf('a', 0, true)], holdsBefore: true, holdsAfter: true};
+        const group: TrackGroup = {type: 'group', name: 's', start: 0, end: 2, iterationDuration: 1, repeatCount: 1, repeatDelay: 0, entries: [itemOf('a', 0, true)], holdsBefore: true, holdsAfter: true};
         expect(() => resolve([group])).toThrow("Hold none of a repeating sequence's entries before.");
     });
 });
@@ -949,10 +944,11 @@ describe("dropCoveredEntries and resolveHolds", () => {
 });
 
 describe("NativeEffectsResolver values passed through", () => {
-    /** Takes any text, and has numbers only for plain numbers; colours have none. */
-    const textResolver: CSSValueResolver = {...numericResolver, currentValueOf: () => 'none'};
+    // Every property is 'none' now; colours have no numbers.
+    beforeEach(() => currentValue = 'none');
+    afterEach(() => currentValue = '0.25');
     const textsOf = (effect: NativeEffect) => effect.keyframes.map(({value}) => value);
-    const resolvedWith = (timing: AnimationTiming, values: AnimationValues) => animationTracksOf(timing, values, [element], textResolver).get(element)!;
+    const resolvedWith = (timing: AnimationTiming, values: AnimationValues) => animationTracksOf(timing, values, [element]).get(element)!;
 
     it("passes values through as text when the easing is on the effect", () => {
         const [effect] = resolvedWith(AnimationTiming.of({duration: 1, easing: 'easeOut'}), {color: {0: 'red', 0.5: 'white', 1: 'blue'}}).color!;
@@ -987,7 +983,7 @@ describe("NativeEffectsResolver values passed through", () => {
             .add(AnimationTiming.of({duration: 1}), 'a')
             .add(AnimationTiming.of({duration: 1}), 'b', '+0.5')
             .build();
-        const [, b] = sequenceTracksOf(sequence, {a: {color: {0: 'red', 1: 'blue'}}, b: {color: {1: 'green'}}}, {}, textResolver).get(element)!.color!;
+        const [, b] = sequenceTracksOf(sequence, {a: {color: {0: 'red', 1: 'blue'}}, b: {color: {1: 'green'}}}).get(element)!.color!;
         expect(textsOf(b!)).toEqual(['blue', 'green']);
     });
 

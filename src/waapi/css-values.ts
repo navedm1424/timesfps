@@ -1,16 +1,14 @@
 import {checkNumber} from "../utils/validation.ts";
 import type {CSSValue} from "../dom/mapping.ts";
 
-/** Everything values need from where they play: their text, the property's current value, which values it takes, and their numbers in one unit. */
-export interface CSSValueResolver {
-    /** The value as CSS text; a bare number takes the property's default unit. */
-    textOf(property: string, value: CSSValue): string;
+/** An element's current values. */
+export class CurrentValueProvider {
+    constructor(private readonly element: Element) {}
+
     /** The property's computed value on the element as it is now. */
-    currentValueOf(element: Element, property: string): string;
-    /** Throws for a value the property doesn't take. */
-    validate(property: string, text: string): void;
-    /** The values as numbers in one unit, to interpolate between; throws when they don't come to one. */
-    alignedNumbersOf(element: Element, property: string, texts: readonly string[]): AlignedNumbers;
+    get(property: string): string {
+        return getComputedStyle(this.element).getPropertyValue(cssPropertyNameOf(property)).trim();
+    }
 }
 
 export interface AlignedNumbers {
@@ -34,38 +32,25 @@ export function keyframePropertyOf(property: string): string {
     return property;
 }
 
-/** Resolves values on the page: its current values are computed styles, the values it takes are what `CSS.supports` takes, and its values compute through probes. */
-export const domValueResolver: CSSValueResolver = {
-    textOf: cssTextOf,
-    currentValueOf: (element, property) => getComputedStyle(element).getPropertyValue(cssPropertyNameOf(property)).trim(),
-    validate: (property, text) => {
-        if (!CSS.supports(cssPropertyNameOf(property), text))
-            throw new TypeError(`"${text}" isn't a value "${property}" takes.`);
-    },
-    alignedNumbersOf: (element, property, texts) => alignNumbers(property, texts, text => PropertyValueType.of(cssPropertyNameOf(property)).resolve(element, text))
-};
-
-/** Takes values as plain numbers without a unit, for tracks that stand in for no property of an element. */
-export const plainNumberResolver: CSSValueResolver = {
-    textOf: (_property, value) => String(value),
-    currentValueOf: (_element, property) => {
-        throw new Error(`"${property}" has no current value off the page, so it needs a value at each end.`);
-    },
-    validate: () => {},
-    alignedNumbersOf: (_element, property, texts) => alignNumbers(property, texts, text => text)
-};
+/** The value as CSS text, a bare number with the property's default unit; throws for a value the property doesn't take. */
+export function checkedTextOf(property: string, value: CSSValue): string {
+    const text = cssTextOf(property, value);
+    if (!CSS.supports(cssPropertyNameOf(property), text))
+        throw new TypeError(`"${text}" isn't a value "${property}" takes.`);
+    return text;
+}
 
 /**
- * The texts as numbers in one unit: as they are when they're all numbers in one unit, or else as `computedTextOf` gives them.
+ * The values as numbers in one unit, to interpolate between: as they are when they're all numbers in one unit, or else computed on the element.
  * Throws when even those don't share one unit.
  */
-export function alignNumbers(property: string, texts: readonly string[], computedTextOf: (text: string) => string): AlignedNumbers {
+export function alignedNumbersOf(element: Element, property: string, texts: readonly string[]): AlignedNumbers {
     const distinctTexts = [...new Set(texts)];
     const given = distinctTexts.map(parseNumeric);
     const numerics = given.every(numeric => numeric !== undefined && numeric.unit === given[0]!.unit)
         ? given as Numeric[]
         : distinctTexts.map(text => {
-            const computed = computedTextOf(text);
+            const computed = PropertyValueType.of(cssPropertyNameOf(property)).resolve(element, text);
             const numeric = parseNumeric(computed);
             if (!numeric) throw new TypeError(`"${text}" comes to "${computed}" for "${property}", which isn't a single number with a unit. ${numbersAdvice}`);
             return numeric;

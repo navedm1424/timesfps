@@ -6,9 +6,8 @@ import type {Progress, Seconds} from "../types.ts";
 import {clamp, invLerp, lerp} from "../utils/math.ts";
 import {sortedEntriesOf} from "../utils/records.ts";
 import type {LinearPoint, NativeEasing} from "./native-easing.ts";
-import type {Segment} from "./segment.ts";
+import type {ResolvedTrackItem} from "./resolved-track-entries.ts";
 import {type Spline, SpringSplineFitter} from "./spring-fit.ts";
-import type {TrackValues} from "./track-values.ts";
 
 /** `easing` leads to the next keyframe; without one, it's linear. The value is CSS text. */
 export interface NativeKeyframe {
@@ -18,36 +17,27 @@ export interface NativeKeyframe {
 }
 
 /**
- * The easing and keyframes of an effect of `duration` that plays the segments, with their values' texts from `values`.
- * A single whole iteration keeps its easing on the effect, with the stops as linear keyframes; otherwise the easings are windowed and split into the keyframes.
+ * The easing and keyframes of an effect from `start` lasting `duration` that plays the plays, one after another without gaps.
+ * A single play of the whole effect keeps its easing on the effect, with its scale's stops as linear keyframes; otherwise the easings are split into the keyframes.
  */
-export function easingAndKeyframesOf(segments: readonly Segment[], duration: Seconds, values: TrackValues): { easing: NativeEasing; keyframes: NativeKeyframe[] } {
-    if (easesOnEffect(segments)) {
-        const [segment] = segments;
-        return {easing: wholeNativeEasingOf(segment!.windowedEasing), keyframes: segment!.stops.map(({offset, value}) => ({offset, value}))};
+export function easingAndKeyframesOf(plays: readonly ResolvedTrackItem[], start: Seconds, duration: Seconds): { easing: NativeEasing; keyframes: NativeKeyframe[] } {
+    const offsetOf = (time: Seconds) => (time - start) / duration;
+    const playOnEffect = playEasedOnEffectOf(plays, offsetOf);
+    if (playOnEffect) {
+        const {easing, scale} = playOnEffect;
+        return {easing: wholeNativeEasingOf(easing), keyframes: scale.stopOffsets.map(offset => ({offset, value: scale.valueAt(offset)}))};
     }
     if (duration === 0)
-        return {easing: {type: 'linear'}, keyframes: [{offset: 0, value: startTextOf(segments[0]!, values)}, {offset: 1, value: endTextOf(segments.at(-1)!, values)}]};
-    return {easing: {type: 'linear'}, keyframes: keyframesOf(segments, values)};
+        return {easing: {type: 'linear'}, keyframes: [{offset: 0, value: plays[0]!.startValue}, {offset: 1, value: plays.at(-1)!.endValue}]};
+    return {easing: {type: 'linear'}, keyframes: keyframesOf(plays, offsetOf)};
 }
 
-/** The text of the value the segment starts on. */
-function startTextOf(segment: Segment, values: TrackValues): string {
-    return values.textAt(segment.stops, segment.startProgress);
-}
-
-/** The text of the value the segment ends on. */
-export function endTextOf(segment: Segment, values: TrackValues): string {
-    return values.textAt(segment.stops, segment.endProgress);
-}
-
-function easesOnEffect(segments: readonly Segment[]): boolean {
-    const [segment, ...otherSegments] = segments;
-    return !!segment && otherSegments.length === 0 && segment.startOffset === 0 && segment.endOffset === 1 && runsOnEffect(segment);
-}
-
-function runsOnEffect({windowedEasing, stops}: Segment): boolean {
-    return windowedEasing.isWhole && !(windowedEasing instanceof SpringEasing) && stops.every(({offset}) => offset >= 0 && offset <= 1);
+/** The play, when the plays are only one, which runs from the effect's start to its end through the whole of an easing WAAPI takes as it is, its stops within 0–1. */
+function playEasedOnEffectOf(plays: readonly ResolvedTrackItem[], offsetOf: (time: Seconds) => number): ResolvedTrackItem | undefined {
+    const [play, ...otherPlays] = plays;
+    if (!play || otherPlays.length > 0 || offsetOf(play.start) !== 0 || offsetOf(play.end) !== 1) return undefined;
+    const {easing, scale} = play;
+    return easing.isWhole && !(easing instanceof SpringEasing) && scale.stopOffsets.every(offset => offset >= 0 && offset <= 1) ? play : undefined;
 }
 
 function wholeNativeEasingOf(easing: Easing): NativeEasing {
@@ -56,12 +46,12 @@ function wholeNativeEasingOf(easing: Easing): NativeEasing {
     return {type: 'linear'};
 }
 
-function keyframesOf(segments: readonly Segment[], values: TrackValues): NativeKeyframe[] {
+/** The plays' keyframes, each play's at offsets of the effect from `offsetOf`. */
+function keyframesOf(plays: readonly ResolvedTrackItem[], offsetOf: (time: Seconds) => number): NativeKeyframe[] {
     const keyframes: NativeKeyframe[] = [];
-    for (const segment of segments) {
-        if (segment.endOffset < segment.startOffset) continue;
-        const offsetAt = (segmentOffset: number) => lerp(segment.startOffset, segment.endOffset, segmentOffset);
-        for (const piece of keyframedPiecesOf(segment, values)) {
+    for (const play of plays) {
+        const offsetAt = (playOffset: number) => lerp(offsetOf(play.start), offsetOf(play.end), playOffset);
+        for (const piece of keyframedPiecesOf(play)) {
             const startOffset = offsetAt(piece.startOffset);
             const last = keyframes.at(-1);
             if (last && last.offset === startOffset && last.value === piece.startValue) {
@@ -79,7 +69,7 @@ function keyframesOf(segments: readonly Segment[], values: TrackValues): NativeK
     return keyframes;
 }
 
-/** A stretch of a segment between two keyframes, with their values' texts; offsets are fractions of the segment. */
+/** A stretch of a play between two keyframes, with their values; offsets are fractions of the play. */
 interface KeyframedPiece {
     startOffset: number;
     endOffset: number;
@@ -88,7 +78,7 @@ interface KeyframedPiece {
     easing?: NativeEasing;
 }
 
-/** A part of a segment's windowed easing whose progress is `fromProgress` to `toProgress` scaled by its own; offsets are fractions of the segment. */
+/** A part of a play's easing whose progress is `fromProgress` to `toProgress` scaled by its own; offsets are fractions of the play. */
 interface CurveSegment {
     startOffset: number;
     endOffset: number;
@@ -98,15 +88,15 @@ interface CurveSegment {
 }
 
 /**
- * The segment as pieces that each ease between two values: one jump for a jump.
- * Otherwise its windowed easing is split wherever it passes a stop, and wherever it turns back, so the value runs linearly with the progress within each piece.
+ * The play as pieces that each ease between two values: one jump for a jump.
+ * Otherwise its easing is split wherever it passes a stop, and wherever it turns back, so the value runs linearly with the progress within each piece.
  * With only two stops, it runs so everywhere, even past them, so only a spring's turns split it.
  */
-function keyframedPiecesOf(segment: Segment, values: TrackValues): KeyframedPiece[] {
-    const {windowedEasing: easing, stops} = segment;
-    if (segment.isJump) return [{startOffset: 0, endOffset: 1, startValue: startTextOf(segment, values), endValue: endTextOf(segment, values)}];
-    const curveSegments = stops.length === 2 && !(easing instanceof SpringEasing) ? curveSegmentsOf(easing) : curveSegmentsOf(easing).flatMap(splitAtTurningPoints);
-    return curveSegments.flatMap(curveSegment => splitAtStops(curveSegment, segment, values));
+function keyframedPiecesOf(play: ResolvedTrackItem): KeyframedPiece[] {
+    const {easing, scale} = play;
+    if (play.iterationDuration === 0) return [{startOffset: 0, endOffset: 1, startValue: play.startValue, endValue: play.endValue}];
+    const curveSegments = scale.stopOffsets.length === 2 && !(easing instanceof SpringEasing) ? curveSegmentsOf(easing) : curveSegmentsOf(easing).flatMap(splitAtTurningPoints);
+    return curveSegments.flatMap(curveSegment => splitAtStops(curveSegment, play));
 }
 
 /** A spring as the segments of its fitted spline within the window; any other easing as one segment. */
@@ -159,24 +149,28 @@ function splitAtTurningPoints(segment: CurveSegment): CurveSegment[] {
     });
 }
 
-/** Between two passes of stops, the curve segment's value runs linearly with its progress, so it eases between their values; a piece that splits further takes values between them. */
-function splitAtStops({startOffset, endOffset, easing, fromProgress, toProgress}: CurveSegment, segment: Segment, values: TrackValues): KeyframedPiece[] {
+/**
+ * Between two passes of stops, the curve segment's value runs linearly with its progress, so it eases between their values;
+ * a piece that splits further takes the values between them.
+ */
+function splitAtStops({startOffset, endOffset, easing, fromProgress, toProgress}: CurveSegment, {scale}: ResolvedTrackItem): KeyframedPiece[] {
     const progressOf = (easedProgress: Progress) => lerp(fromProgress, toProgress, easedProgress);
     const startEased = easing.startProgress;
     const endEased = easing.endProgress;
-    const {stops} = segment;
-    const crossings = segment
-        .stopsBetween(progressOf(startEased), progressOf(endEased))
-        .flatMap(({offset: progress, value}) => {
+    const lowest = Math.min(progressOf(startEased), progressOf(endEased));
+    const highest = Math.max(progressOf(startEased), progressOf(endEased));
+    const crossings = scale.stopOffsets
+        .filter(progress => progress > lowest && progress < highest)
+        .flatMap(progress => {
             const eased = invLerp(fromProgress, toProgress, progress);
             const [offset] = easing.offsetsAt(eased);
-            return offset === undefined ? [] : [{offset, eased, value}];
+            return offset === undefined ? [] : [{offset, eased, progress}];
         })
         .sort((first, second) => first.offset - second.offset);
     const bounds = [
-        {offset: 0, eased: startEased, value: values.textAt(stops, progressOf(startEased))},
+        {offset: 0, eased: startEased, progress: progressOf(startEased)},
         ...crossings,
-        {offset: 1, eased: endEased, value: values.textAt(stops, progressOf(endEased))}
+        {offset: 1, eased: endEased, progress: progressOf(endEased)}
     ];
 
     return bounds.slice(1).flatMap((end, index) => {
@@ -184,14 +178,15 @@ function splitAtStops({startOffset, endOffset, easing, fromProgress, toProgress}
         if (end.offset <= start.offset) return [];
 
         const segmentOffsetOf = (pieceOffset: number) => lerp(startOffset, endOffset, lerp(start.offset, end.offset, pieceOffset));
+        const valueAt = (pieceProgress: Progress) => scale.valueAt(lerp(start.progress, end.progress, pieceProgress));
         const pieces = nativePiecesOf(easing.segment(start.offset, end.offset), start.eased, end.eased);
         return pieces.map((piece, pieceIndex): KeyframedPiece => {
             const previous = pieces[pieceIndex - 1] ?? {offset: 0, progress: 0};
             return {
                 startOffset: segmentOffsetOf(previous.offset),
                 endOffset: segmentOffsetOf(piece.offset),
-                startValue: values.textBetween(start.value, end.value, previous.progress),
-                endValue: values.textBetween(start.value, end.value, piece.progress),
+                startValue: valueAt(previous.progress),
+                endValue: valueAt(piece.progress),
                 ...(piece.easing && {easing: piece.easing})
             };
         });

@@ -659,20 +659,20 @@ Every error has the type of what went wrong:
 | `src/utils/math.ts` | Interpolation and solving monotone functions |
 | `src/utils/records.ts` | Reading numeric-keyed records in order |
 | `src/utils/collections.ts` | `groupBy`, `getOrInsertComputed`, `partitionPoint` (binary search for the first item past a point), and `LeastRecentlyUsedCache` |
-| `src/tracks/track-entries.ts` | `TrackEntry`, with `repeats` and `repeatsForever`, `TrackStop`, and a track's entries, `TrackItem` and `TrackGroup`: an entry's run, its stops, `null` for a missing value, and what the tracks stage gives |
+| `src/tracks/track-entries.ts` | `TrackEntry`, with `repeats` and `repeatsForever`, `TrackStop`, and a track's entries, `TrackItem` and `TrackGroup`, with `timeAtOffset`: an entry's run, its stops, `null` for a missing value, and what the tracks stage gives |
 | `src/tracks/track-entry-builder.ts` | `TrackEntryBuilder`, and the builders that extend it, `TrackItemBuilder` and `TrackGroupBuilder`: a track's entry built step by step, an item entry's run through its stops, or a repeating sequence's run with the builders of the entries in it |
 | `src/tracks/track-layering.ts` | `dropCoveredEntries`: the builders that show once laid over each other, through the internal `layOver`, which leaves out the builders that one laid over them covers, and `resolveHolds`: which of builders that show hold before and after them, the first one before them only with `firstHoldsBefore` |
 | `src/tracks/tracks.ts` | `TracksResolver`, its `TrackBuilder`s, which hold a track's entries (`TrackItemEntry`) in the groups of the sequences around them (`TrackGroupEntry`) and build them into its entries, the `Tracks` it gives, and `Track`: the engine-agnostic tracks stage |
 | `src/dom/mapping.ts` | What binds a timing to the DOM, for any DOM adapter: targets, value forms (`RawTweenStops`), mapping types, `AnimatorOptions`, resolving targets, and `ByElementAndProperty`, a value for each property of each element, with `mapByElementAndProperty` |
 | `src/waapi/animator.ts` | `animator`, and `WAAPIAnimator`, the `Animator` for WAAPI, which runs every step and creates the native animations |
 | `src/waapi/controls.ts` | `AnimationControls`: playing, pausing, seeking and listening to the native animations together |
-| `src/waapi/css-values.ts` | CSS property names, value types, and the value handling: `CSSValueResolver`, `domValueResolver`, `plainNumberResolver` and `alignNumbers` |
-| `src/waapi/native-effects.ts` | `NativeEffectsResolver` and the `NativeEffects` it gives: tracks into WAAPI effects, each entry resolved (the internal `UnresolvedTrackEntry`) into a native effect builder, and the holds WAAPI plays |
+| `src/waapi/css-values.ts` | CSS property names, value types, and values on the page: `CurrentValueProvider`, `checkedTextOf` and `alignedNumbersOf` |
+| `src/waapi/native-effects.ts` | `NativeEffectsResolver` and the `NativeEffects` it gives: tracks into WAAPI effects, each entry resolved (the internal `UnresolvedTrackEntry`) into a resolved track entry, and the holds WAAPI plays |
 | `src/waapi/missing-values.ts` | `resolveMissingValues`, `MissingValuesUnresolvedEntry` and `MissingValuesResolvedEntry`: the value underneath each missing value of entries laid over each other, as a pure algorithm on those two interfaces |
-| `src/waapi/native-effect-builder.ts` | `NativeEffectBuilder`, `NativeEffect` and `endOf`: what WAAPI plays for one track entry, a repeating group merged into one iteration, since WAAPI can't nest repeats, its value at a time, and its effects, natively repeated or laid out in keyframes |
-| `src/waapi/segment.ts` | `Segment`: part of a native effect's iteration, stops played through a window of an easing |
-| `src/waapi/track-values.ts` | `TrackValues`: one track's values as CSS text, given values checked, the current value, and values between two |
-| `src/waapi/keyframes.ts` | `easingAndKeyframesOf` and `NativeKeyframe`: segments into native keyframes and easings |
+| `src/waapi/native-effect-scale.ts` | `NativeEffectScale` and `ScaleStop`: one property's values on one element at offsets of an easing's progress, as CSS text |
+| `src/waapi/resolved-track-entries.ts` | `ResolvedTrackItem` and `ResolvedTrackGroup`: track entries with their missing values resolved, their values at a time, and their iterations as plays, a group's flattened, since WAAPI can't nest repeats |
+| `src/waapi/native-effect-builder.ts` | `NativeEffectBuilder` and `NativeEffect`: a resolved track entry into its effects, natively repeated or laid out in keyframes |
+| `src/waapi/keyframes.ts` | `easingAndKeyframesOf` and `NativeKeyframe`: plays into native keyframes and easings |
 | `src/waapi/native-easing.ts` | `NativeEasing` and its CSS form |
 | `src/waapi/spring-fit.ts` | Fitting a spring easing with cubic Bézier segments |
 
@@ -689,12 +689,12 @@ new WAAPIAnimator({scope}).animate(definition)    scope: document.documentElemen
 │                  (targets resolved §5.1, starts and delays §5.3; values stay as given §5.2)
 ├─ 2. Tracks       new TracksResolver(plan, naming).resolve()  → Tracks: a Track per target and property (§5.4)
 │                  (entries layered, repeating sequences kept as groups, holds; missing values left as null)
-├─ 3. Effects      NativeEffectsResolver.resolve(tracks, domValueResolver), per track (§5.5)
+├─ 3. Effects      NativeEffectsResolver.resolve(tracks), per track (§5.5)
 │     ├─ a. missing values  resolveMissingValues: each entry, in stacking order, takes the value underneath
-│     │                     each of its missing ones → NativeEffectBuilder[]  (groups merged into one iteration)
-│     ├─ b. values          TrackValues  (given values checked, the current value, values between two §5.6)
-│     └─ c. effects         builder.build() → NativeEffect[]  (repeats as iterations or keyframes, fills §5.5;
-│                           keyframes and native easings §5.7)
+│     │                     each of its missing ones, its values a NativeEffectScale (§5.6)
+│     │                     → (ResolvedTrackItem | ResolvedTrackGroup)[]  (a group's iteration flattened into plays)
+│     └─ b. effects         new NativeEffectBuilder(entry).build() → NativeEffect[]  (repeats as iterations or keyframes,
+│                           fills §5.5; keyframes and native easings §5.7)
 │                  = NativeEffects: ByElementAndProperty<NativeEffect[]>
 └─ 4. Play         element.animate(...) per effect
                    → AnimationControls
@@ -708,13 +708,13 @@ The plan resolves each animation definition's target as it reaches it, through t
 
 ### 5.2 Values
 
-Values stay as given, numbers or CSS text, in each definition's `TweenStops`, through the plan and the tracks, which leave a missing one as `null` (§5.4). The native effects stage resolves them per track, so per element, because units like `em`, `%` and `vw` depend on the element, and so does the current value a missing one may take (§5.5, §5.6). There, a bare number becomes CSS text through the resolver's `textOf`, which on the page adds the property's default unit, and values are resolved to numbers where they need to be.
+Values stay as given, numbers or CSS text, in each definition's `TweenStops`, through the plan and the tracks, which leave a missing one as `null` (§5.4). The native effects stage resolves them per track, so per element, because units like `em`, `%` and `vw` depend on the element, and so does the current value a missing one may take (§5.5, §5.6). There, each item's values become a `NativeEffectScale`, which turns a bare number into CSS text with the property's default unit, and resolves values to numbers where they need to be.
 
 A property's **value type** comes from `CSS.supports`, tested against `1`, `1px`, `1%`, `1deg` and `1s`, and cached per property. It's only looked up for a bare number, or to resolve a value. It gives:
 - the **default unit** for a bare number: none when the property takes numbers, then `px`, then `deg`; otherwise a bare number throws;
 - the **probe syntax**, such as `<length-percentage>` or `<number> | <percentage>`.
 
-Nothing is resolved in place, and no stage before the native effects one works a value out: a track's stops (`TrackStop`) hold given values, and `null` for a missing one. The native effects stage gives each missing value its value underneath, as CSS text, before it builds anything that needs it, and works each given value's text and the current value out once per track (§5.6).
+Nothing is resolved in place, and no stage before the native effects one works a value out: a track's stops (`TrackStop`) hold given values, and `null` for a missing one. The native effects stage gives each missing value its value underneath, as CSS text, before it builds anything that needs it, and each item's scale works its given values' texts out once (§5.6).
 
 ### 5.3 Plan
 
@@ -827,27 +827,27 @@ Each has a name and a `TrackEntry`, and builds one entry of the track.
 
 **The track's entries** (`src/tracks/track-entries.ts`). A `Track` (`src/tracks/tracks.ts`) is its entries in stacking order, each a `TrackItem` or a `TrackGroup`. Next to `TrackEntry`, `repeats(timing)` and `repeatsForever(timing)` say whether a run repeats, and whether it repeats forever; `TrackEntryBuilder` and `TrackBuilder` use them.
 
-A `TrackStop` is a value at an offset of an easing's progress: on a track, a given value, or `null` for a missing one; in the native effects stage, once resolved, CSS text (`TrackStop<string>`).
+A `TrackStop` is a value at an offset of an easing's progress: a given value, or `null` for a missing one. `timeAtOffset(item, offset)` is the time `offset` of the way from an item's start to its end: its start at 0, and its end at 1, `Infinity` for one that repeats forever.
 
 | Field | Meaning |
 |---|---|
 | `type` | `'item'` or `'group'` |
 | `name` | From the `Naming`: an item's entry path, or the paths of a group's leaves joined with `+`, such as `intro>title+intro>subtitle`. A continuation is named after what it continues. An animation on its own has none |
 | `start`, `iterationDuration`, `repeatCount`, `repeatDelay`, `oscillate` | Its run (`TrackEntry`). A group's are its sequence's |
+| `end` | When its last iteration ends, `Infinity` when it never ends, as its builder works it out: a group's where its entries end in its last iteration |
 | `easing`, `stops` | An item's: its easing, and its stops, as given, `null` for a missing value |
 | `entries` | A group's: its entries as they play in its first iteration, in stacking order, none of them holding before. Each of its iterations plays them, and every other one of an oscillation flips them |
 | `holdsBefore` | Whether it holds its start value before it starts |
 | `holdsAfter` | Whether it holds its end value once it's done, after its last repeat; in a group, until what's next in it shows |
 
-### 5.5 Effects: missing values and native effect builders
+### 5.5 Effects: missing values, resolved entries and native effects
 
-`NativeEffectsResolver.resolve(tracks, valueResolver)` (`src/waapi/native-effects.ts`) turns each track into WAAPI effects:
-1. **Values:** a `TrackValues` for the track (§5.6).
-2. **Missing values:** each entry as an `UnresolvedTrackEntry`, resolved in stacking order (`resolveMissingValues`, below), with the property's current value under them all. Each resolves into a `NativeEffectBuilder`.
-3. **Holds:** the ones WAAPI can play are checked (`requireOnlyFirstHoldsBefore`, below).
-4. **Effects:** each builder builds into its effects (`build`), in the track's order.
+`NativeEffectsResolver.resolve(tracks)` (`src/waapi/native-effects.ts`) is the whole native effects stage: it takes nothing but the tracks, and reads the page itself. It turns each track into WAAPI effects:
+1. **Missing values:** each entry as an `UnresolvedTrackEntry`, resolved in stacking order (`resolveMissingValues`, below), with the property's current value under them all (`CurrentValueProvider`, §5.6). Each resolves into a `ResolvedTrackItem` or a `ResolvedTrackGroup`.
+2. **Holds:** the ones WAAPI can play are checked (`requireOnlyFirstHoldsBefore`, below).
+3. **Effects:** each resolved entry builds into its effects (`new NativeEffectBuilder(entry).build()`), in the track's order.
 
-**Missing values** (`src/waapi/missing-values.ts`). `resolveMissingValues(entries, valueUnderneath)` is a pure algorithm on two interfaces. It knows nothing of tracks, builders or the form values are kept in:
+**Missing values** (`src/waapi/missing-values.ts`). `resolveMissingValues(entries, valueUnderneath)` is a pure algorithm on two interfaces. It knows nothing of tracks, resolved entries or the form values are kept in:
 
 | Part | What it is |
 |---|---|
@@ -860,48 +860,40 @@ It resolves the entries in the order they're given, each over the ones before it
 
 That's the **value underneath**: what WAAPI shows there, the topmost effect that's running or filling. Values only come from below, so each entry resolves from ones already resolved: there are no cycles, nothing waits, and nothing is taken from an entry over it or after it.
 
-**Unresolved entries** (`UnresolvedTrackEntry`, internal to `src/waapi/native-effects.ts`) keep a track entry and the track's `TrackValues`, and resolve into a `NativeEffectBuilder`:
-- **An item:** each given value becomes CSS text (`TrackValues.textOf`, which checks it). A missing start takes the value underneath where the item starts, and a missing end where it ends (`endOf`): where its last iteration ends, or at `Infinity` for one that repeats forever, where only what's held under it gives a value.
-- **A group:** its entries resolve among themselves (`resolveMissingValues`), in its first iteration, with the value underneath the group as their fallback: the entries under it on the track, then the current value. Its builder then merges theirs (`NativeEffectBuilder.ofGroup`).
+**Unresolved entries** (`UnresolvedTrackEntry`, internal to `src/waapi/native-effects.ts`) keep a track entry and a `nativeEffectScaleFactory`, which makes a scale of the track's property on its element from resolved stops (`ScaleStop`s), and resolve into a resolved entry:
+- **An item:** its stops, each missing one taking the value underneath at its time (`resolvedStopsOf`, `timeAtOffset`): a missing start where the item starts, and a missing end where it ends, at `Infinity` for one that repeats forever, where only what's held under it gives a value. They become its scale, which checks its given values (§5.6), and the item a `ResolvedTrackItem`.
+- **A group:** its entries resolve among themselves (`resolveMissingValues`), in its first iteration, with the value underneath the group as their fallback: the entries under it on the track, then the current value. They become a `ResolvedTrackGroup` (`ResolvedTrackGroup.of`).
 - **A continuation** is an entry like any other: its missing values come from what's under it on the track, whatever its copy in the group takes.
 
-**Native effect builders** (`src/waapi/native-effect-builder.ts`). A `NativeEffectBuilder` is what WAAPI plays for one track entry, its values CSS text, and implements `MissingValuesResolvedEntry<string>`. It keeps its entry (its timing, name and holds), one iteration as `Segment`s, and the track's `TrackValues`.
+**Resolved entries** (`src/waapi/resolved-track-entries.ts`). Both implement `MissingValuesResolvedEntry<string>`, and have their track entry's fields but `type`: its name, run, `end` and holds. A **play** is a `ResolvedTrackItem` that plays once, without holds: one iteration of an item, or a part of one. Times are after the outermost definition starts.
 
 | Part | What it does |
 |---|---|
-| `ofItem(item, stops, values)` | An item's builder, with its stops' texts: one segment from 0 to 1, its stops through the whole of its easing |
-| `ofGroup(group, entries, values)` | A repeating group's builder, with its entries' builders, its iteration merged from theirs (below) |
-| `start`, `end`, `ends` | Where what plays in its first iteration starts, when its last iteration ends (`Infinity` when it never ends), and whether it ends. They're worked out as the tracks stage works out its builders', from the same times, never back from segment offsets, so a time at a boundary falls on the same side in both stages, where the holds were decided |
-| `holdsBefore`, `holdsAfter`, `name` | Its entry's |
-| `valueAt(time)` | Before it starts, its start value when it holds before; from its end on, its end value when it holds after; `undefined` otherwise. In between, its iteration's value then. A repeat delay, and the time before what plays in an iteration starts, show the end value of the iteration before |
-| `build()` | Its effects (native layout, below) |
+| `ResolvedTrackItem.of(item, scale)` | The item, with its values as `scale` in place of its stops, and its `easing` |
+| `ResolvedTrackGroup.of(group, entries)` | The group, with its entries resolved, its first iteration flattened into plays (below). It throws without entries, for an entry that holds before, and for one that repeats forever |
+| `ends` | Whether it ends: it doesn't when it repeats forever |
+| `valueAt(time)` | Before it starts, its start value when it holds before; from its end on, its end value when it holds after; `undefined` otherwise. In between, `clampedValueAt(time)`. A group starts where what plays in its first iteration does |
+| `clampedValueAt(time)` | Its value at `time` as though it held before and after: its iteration's then, at its scale's value at its easing's progress there. A repeat delay, and the time before what plays in a group's iteration starts, show the end value of the iteration before |
+| `plays(first, last)` | Its iterations from `first` to `last` as plays, one after another, each one's end value held until the next starts (`joined`). An item's iteration is one play, every other one of an oscillation flipped; a group's is its first iteration's plays, moved to where the iteration starts, and every other one of an oscillation back to front, each play flipped and moved to the mirror image of its time in the iteration |
+| `startValue`, `endValue` | An item's: the value its first iteration starts on, and its last ends on. `endValue` throws for one that never ends |
+| `moveTo(start)` | A play's: the same play from `start` |
+| `trim(start, end)` | A play's: what of it runs from `start` to `end`, its easing's window narrowed to that (`Easing.segment`); its scale stays. A jump stays when it's from `start` up to, but not at, `end` |
+| `flip(oscillate)` | A play's: the same play, in the same time, with what `oscillate` flips flipped. Flipping its `'time'` runs its easing backwards (`Easing.reverse`). Flipping its `'values'` flips its scale and runs it through the mirror image of its easing's window, from 1 minus its end to 1 minus its start, forwards: at a fraction `x` of an iteration, it reads `1 − p(1 − x)`, so its values run from end to start, however it's trimmed |
+| `holdEnd(until)` | A play's: its end value held from its end until `until`, a play through a linear easing of a scale held at its end progress (`NativeEffectScale.heldAt`); `undefined` when there's no time to hold it |
 
-**Merging a group** (`ofGroup`). WAAPI can't nest repeats, so a group's builder plays its entries in one iteration:
-1. Each entry's iterations, one after another (`stretch`), a group in it merged first.
-2. In the group's iteration, at the same moments, as fractions of it (`segmentsIn`).
-3. Laid, after the first, against the segments so far, in stacking order:
-    - **Starts before they end** (a shared start included): it replaces their segments while it lasts (`overlay`). A segment it trims (`trim`, `Segment.trim`) keeps its easing and all its stops, and only its window narrows, so its values are the ones it had there.
+`moveTo`, `trim`, `flip` and `holdEnd` throw for an item that repeats or holds, saying to take its plays first.
+
+**Flattening a group** (`ResolvedTrackGroup.of`). WAAPI can't nest repeats, so a group plays its entries in one iteration:
+1. Each entry's iterations, one after another (`plays(0, repeatCount)`), a group in it flattened first, as it resolved.
+2. Laid, after the first, against the plays so far, in stacking order:
+    - **Starts before they end** (a shared start included): it replaces their plays while it lasts (`overlay`). A play it trims (`trimmed`, `trim`) keeps its scale, and only its easing's window narrows, so its values are the ones it had there.
     - **Starts at or after their end:** it follows, with their end value held until then (`joined`), as the holds the tracks stage gives its entries say.
 
-It throws without entries, when the group's iteration has no duration, for an entry that holds before, and for one that repeats forever.
+**Holds it plays.** An entry's hold before would show over every effect under it that starts earlier, and playing it only once those end would take merging them. So the resolver throws for an entry that holds before and starts after another (`requireOnlyFirstHoldsBefore`), and `ResolvedTrackGroup.of` for an entry of a group that holds before. The tracks stage gives neither.
 
-**Holds it plays.** A builder's hold before would show over every effect under it that starts earlier, and playing it only once those end would take merging them. So the resolver throws for a builder that holds before and starts after another (`requireOnlyFirstHoldsBefore`), and `ofGroup` for an entry of a group that holds before. The tracks stage gives neither.
+**Native effect builders** (`src/waapi/native-effect-builder.ts`). `new NativeEffectBuilder(entry).build()` gives a resolved entry's effects (native layout, below), each one a stretch of its iterations (`stretch(first, last, {holdsUntilNext})`): its plays from `first` to `last`, from where the first one starts to where the last one ends. With `holdsUntilNext`, the last one's end value is held too, until the iteration after it would start. It throws for iterations the entry doesn't have.
 
-| Part | What it is |
-|---|---|
-| `Segment` (`src/waapi/segment.ts`) | Part of a native effect's iteration: `stops`, their values CSS text, played through an `easing`, over a window of its input time, `windowStart` to `windowEnd` (backwards when the end comes first), and placed from `startOffset` to `endOffset`, fractions of the time it's placed in: an iteration, or a stretch of them |
-| `windowedEasing` | Its easing over its window (`Easing.segment`), which keeps the easing's progress: the value at a fraction `x` of the segment is its stops' at `windowedEasing.progressAt(x)` |
-| `startProgress`, `endProgress`, `progressAt(offset)` | The progress its window starts from and ends at, and the progress at an offset of the time it's placed in: its start progress before it, its end progress after it, and where it starts and ends at once (`isJump`) |
-| `trim(start, end)` | What of it plays from `start` to `end`, with its window narrowed to that; its easing and stops stay. A jump stays when it's from `start` up to, but not at, `end` |
-| `flip(oscillate)` | The same segment in the flipped iteration, from 1 minus its end to 1 minus its start. Flipping its `'time'` runs its window backwards. Flipping its `'values'` mirrors its window too, so its easing still runs forwards, and reverses its stops, each one moved from its offset to 1 minus it: at a fraction `x`, it reads its stops at `1 − p(1 − x)`, so its values run from end to start, however it's trimmed |
-| `stopsBetween(from, to)`, `move(startOffset, endOffset)` | The stops strictly between two progresses, and the segment moved elsewhere |
-| `Segment.holding(value, start, end)` | A hold: the same value at 0 and 1, through a linear easing |
-| `Stretch` | Internal to the builder: a stretch of time, with its `start`, after the outermost definition starts, its `duration`, and its `segments`, one after another without gaps, their offsets fractions of it |
-| `iteration(index)` | Its iteration at `index`, as a stretch: every other one of an oscillation back to front, each segment flipped (`Segment.flip`) |
-| `stretch(first, last, {holdsUntilNext})` | Its iterations from `first` to `last`, one after another, each one's end value held until the next starts (`joined`), as a stretch from where the first one's segments start to where the last one's end, 0 to 1. With `holdsUntilNext`, the last one's is held too, until the iteration after it would start. A stretch without duration keeps its segments' offsets in their iteration. It throws for iterations it doesn't have |
-| `segmentsIn(stretch, time)` | A stretch's segments in another stretch of time, at the same moments, as fractions of it, each offset worked out from its time, so a stretch's first segment starts at exactly 0 and its last ends at exactly 1 |
-
-**Native layout** (`build`). For a builder whose iteration's segments go from `a` to `b`, in iterations of `L` with a repeat delay `d`, the period is `P = L + d`:
+**Native layout** (`build`). For an entry whose iteration's plays go from `a` to `b`, in iterations of `L` with a repeat delay `d`, the period is `P = L + d`:
 
 | Case | Effects |
 |---|---|
@@ -915,30 +907,27 @@ It throws without entries, when the group's iteration has no duration, for an en
 
 The last iteration never ends with a hold. The holds between iterations, `[endHold + repeatDelay + startHold]`, are in the keyframes (`stretch` with `holdsUntilNext`). Each effect starts where its first iteration does, after the outermost definition starts.
 
-**Fills.** The first effect of a builder that holds before fills backwards, and every effect of one that holds after fills forwards.
+**Fills.** The first effect of an entry that holds before fills backwards, and every effect of one that holds after fills forwards.
 
-**Iterations without duration.** An iteration of 0 seconds is a segment that starts and ends at the same time. Inside a longer effect, it's two keyframes at the same offset, its start values and then its end values, so the track jumps. An effect of 0 seconds has two keyframes: the start values at 0 and the end values at 1. WAAPI shows the start values before it, if it fills backwards, and the end values from its start time on.
+**Iterations without duration.** An iteration of 0 seconds is a play that starts and ends at the same time. Inside a longer effect, it's two keyframes at the same offset, its start values and then its end values, so the track jumps. An effect of 0 seconds has two keyframes: the start values at 0 and the end values at 1. WAAPI shows the start values before it, if it fills backwards, and the end values from its start time on.
 
-**Order.** Effects are created in their track's order, each builder's in order, and WAAPI shows later-created effects over earlier ones.
+**Order.** Effects are created in their track's order, each entry's in order, and WAAPI shows later-created effects over earlier ones.
 
 ### 5.6 Effects: values
 
-Values become keyframe text through a `CSSValueResolver` (`src/waapi/css-values.ts`), the one thing that handles values:
-- `textOf` writes a value as CSS text, adding the property's default unit to a bare number;
-- `currentValueOf` reads the property's computed value;
-- `validate` throws for a value the property doesn't take;
-- `alignedNumbersOf` gives values as numbers in one unit.
+Values on the page come from `src/waapi/css-values.ts`, and the native effects stage reads them itself:
+- `CurrentValueProvider(element).get(property)` reads the property's computed value on the element as it is now;
+- `checkedTextOf(property, value)` writes a value as CSS text, adding the property's default unit to a bare number, and throws for a value the property doesn't take (`CSS.supports`);
+- `alignedNumbersOf(element, property, texts)` gives values as numbers in one unit.
 
-On the page, that's `domValueResolver`, which uses computed styles, `CSS.supports` and probes. Tools that animate no real property use `plainNumberResolver`.
-
-For each track, a `TrackValues` (`src/waapi/track-values.ts`) works its values out as CSS text:
-1. **Given values** (`textOf`) take their text through the resolver's `textOf`, and are checked with `validate`, once each. Every stop of every item is, as it resolves (§5.5), so every given value is checked, whether a keyframe shows it or not.
-2. **The current value** (`currentValue`) is the property's computed value, read once, when something first needs it.
-3. **Stops at a progress** (`textAt(stops, progress)`): a stop's own value at a stop, and otherwise the value between the stops around it, linear in the progress, continuing the nearest two past the outer ones. Stops sit at their progress, so where the easing reaches one in time depends on the easing.
-4. **A value between two** (`textBetween(from, to, amount)`) is either one at its end, or where both are the same, and otherwise the number `amount` of the way between them, in the unit both come to (`alignedNumbersOf`, `alignNumbers`). Each call aligns its two texts afresh.
+Each item's values are a `NativeEffectScale(element, property, stops)` (`src/waapi/native-effect-scale.ts`), its resolved stops at offsets of its easing's progress:
+1. **Given values** become checked CSS text as the scale is made (`checkedTextOf`). Every item resolves (§5.5), so every given value is checked, whether a keyframe shows it or not.
+2. **The current value** comes in as any other value underneath, through the track's `CurrentValueProvider`.
+3. **The value at an offset** (`valueAt(offset)`): a stop's own value at a stop, and otherwise the value between the stops around it, linear in the offset, continuing the nearest two past the outer ones. Stops sit at their progress, so where the easing reaches one in time depends on the easing. A value between two stops is either one at its end, or where both are the same, and otherwise the number that far between them, in the unit both come to (`alignedNumbersOf`), which each pair of stops works out once, the first time a value between them is asked for.
     - Ends that are both numbers in one unit are taken as they are.
     - Otherwise both are computed through a probe.
     - If their units still differ, it throws with what to do instead: use values in one unit, or expressions that come to one. To have values pass through, use only native easings, and give no values between 0 and 1 where repeats are played as keyframes.
+4. **`flip()`** gives the same values from its end to its start, each stop moved from its offset to 1 minus it, and **`heldAt(offset)`** a scale whose every value is this one's at `offset`. **`stopOffsets`** are its stops' offsets, in order.
 
 So a keyframe that lands on a stop passes the stop's value through as its text, and only a keyframe between stops needs numbers, and only of the stops around it. A missing value is the same: one that lands on a stop of the entry under it, or on its end held there, passes that value through, and only one that lands between stops needs numbers.
 
@@ -948,18 +937,18 @@ Each syntax has two probes with different initial values. A value that the synta
 
 ### 5.7 Effects: keyframes and easings
 
-`NativeEffectBuilder.build` gives each effect its easing and keyframes through `easingAndKeyframesOf(segments, duration, values)` (`src/waapi/keyframes.ts`), each keyframe's value as CSS text (§5.6).
+`NativeEffectBuilder.build` gives each effect its easing and keyframes through `easingAndKeyframesOf(plays, start, duration)` (`src/waapi/keyframes.ts`), each play's times as offsets of the effect, and each keyframe's value its scale's, as CSS text (§5.6).
 
-- **On the effect.** If the effect is a single segment covering its whole duration, with a whole, forward, non-spring windowed easing and stops within 0–1, the easing goes on the effect and the stops become linear keyframes at their progress. Native iterations with `alternate` keep it there.
-- **In the keyframes.** Otherwise the effect easing is linear and each segment's windowed easing (`Segment.windowedEasing`) is split into keyframes:
+- **On the effect.** If the effect is a single play covering its whole duration, with a whole, forward, non-spring easing and stops within 0–1 (`playEasedOnEffectOf`), the easing goes on the effect and its scale's stops become linear keyframes at their progress. Native iterations with `alternate` keep it there.
+- **In the keyframes.** Otherwise the effect easing is linear and each play's easing, over its window, is split into keyframes:
   1. A spring is fitted once per spring and duration, as a spline of cubic Bézier curve segments. The ones that overlap its window are cut to it.
-  2. Each curve segment is split where its progress turns back, so each piece only rises or only falls. A segment with only two stops isn't, unless it's a spring: its value runs linearly with the progress everywhere, even past the stops, as WAAPI extrapolates between two keyframes.
-  3. Each piece is split where it passes a stop, so between two keyframes the value runs linearly with the progress. A keyframe there takes the stop's own value, and a piece's ends take the values there (`TrackValues.textAt`).
-  4. Each piece becomes a native easing, scaled to 0–1. A piece split further, as below, takes the value between its ends where it's split (`TrackValues.textBetween`):
+  2. Each curve segment is split where its progress turns back, so each piece only rises or only falls. A play with only two stops isn't, unless it's a spring: its value runs linearly with the progress everywhere, even past the stops, as WAAPI extrapolates between two keyframes.
+  3. Each piece is split where it passes a stop, so between two keyframes the value runs linearly with the progress. A keyframe there takes the stop's own value, and a piece's ends take the values there (`NativeEffectScale.valueAt`).
+  4. Each piece becomes a native easing, scaled to 0–1. A piece split further, as below, takes its scale's value at the progress where it's split, between its ends':
      - **Cubic Bézier:** the window is cut out of the curve and stretched. If stretching would push a handle outside the 0–1 time range, it's split once more at the inflection of x. Reversed windows reverse the definition.
      - **Steps:** a whole forward window from 0 to 1 stays a native `steps()`. Any other window becomes a `linear()` whose levels jump at the step positions, so steps never add keyframes.
      - **Linear:** linear.
-- **A jump**, a segment without duration, is two keyframes at the same offset, its start value and then its end value, so the track jumps.
+- **A jump**, a play without duration, is two keyframes at the same offset, its start value and then its end value, so the track jumps.
 - **Keyframe easings** lead to the next keyframe, as WAAPI's do. A keyframe without one is linear, and the last keyframe has none.
 - **Offsets** are clamped to 0–1 and kept in order, because rounding can push them out and WAAPI rejects that.
 
@@ -994,16 +983,17 @@ For each target, property and effect, in order, the adapter calls `element.anima
 | Track runs named by entry path | Definitions are reusable, so identity is the place in the tree, not the object |
 | Values resolved per target, through probes | Relative units depend on the element; probes are untouched by animations and give absolute values |
 | Values resolved after the tracks, which leave missing ones as `null` | Current values and numbers depend on the element, only interpolation needs numbers, and what shows under an entry depends on how the stage that plays the tracks plays them |
-| Trimming narrows a segment's window, and keeps its easing and stops | The easing keeps its progress, so every stop the trimmed easing still reaches stays where it was, and splitting is left to the stage that needs it |
+| Trimming narrows a play's easing's window, and keeps its scale | The easing keeps its progress, so every stop the trimmed easing still reaches stays where it was, and splitting is left to the stage that needs it |
 | Tracks are engine-agnostic | They describe repeats as what happens, not how a definition asked for it: runs with a repeat count, a repeat delay and what an oscillation flips, and holds before and after, whatever renders them. The WAAPI side decides what it repeats natively and what it lays out in keyframes |
 | Constructors validate and clamp | Every way of making a definition is checked, not only the factories |
 | Tracks per target and property | WAAPI stacks effects per property, and units differ between entries |
-| Overlapping entries layer, stacked by start, and only a repeating sequence's entries stay together, as a group | WAAPI already shows the earlier effect again, from where it is, once the later one ends. A repeat plays everything in it again together, which only one effect can, so the WAAPI side merges a group into one native effect builder |
+| Overlapping entries layer, stacked by start, and only a repeating sequence's entries stay together, as a group | WAAPI already shows the earlier effect again, from where it is, once the later one ends. A repeat plays everything in it again together, which only one effect can, so the WAAPI side flattens a group into one iteration of plays |
 | The tracks stage keeps repeating sequences as groups, and flattens nothing | Flattening only serves an engine that can't nest repeats; an engine that can plays the groups as they are |
 | A missing value takes the value underneath it: the topmost of the entries under it with a value there, running or held, or else the current value | It's what WAAPI shows there, the topmost effect that's running or filling. Values only ever come from below, so entries resolve in stacking order, each from ones already resolved, with no cycles and nothing deferred |
 | An entry after one never gives it a value | Its missing end is what's underneath it, the same rule as its start; ending where the next one starts takes giving that value |
 | Continuations take their values from under them, not from their copies in the group | They're resolved like every other entry, in stacking order |
-| Missing values are resolved by a pure algorithm on two interfaces | It knows nothing of tracks, builders or value forms; the native effects stage implements both |
+| Missing values are resolved by a pure algorithm on two interfaces | It knows nothing of tracks, resolved entries or value forms; the native effects stage implements both |
+| The native effects stage reads the page itself | It's the whole engine side, so it knows how to read and write CSS values; nothing hands it a way to |
 | Keyframe easings lead to the next keyframe | It's WAAPI's own model |
 | Steps split into `linear()` windows, not hold-and-jump keyframes | Exact, and no extra keyframes |
 
@@ -1022,7 +1012,7 @@ The cases cover single animations through every repeat, entries in sequences, an
 
 `tests/animation.test.ts` covers timings: validation and clamping, telling transition kinds apart, splitting `AnimationTimingOptions`, equal transitions sharing a descriptor, `LeastRecentlyUsedCache`, the `DampedSpring` factories, and staggers. `tests/sequence.test.ts` covers positions (parsing, one offset of each kind in order, and resolving every reference and share), sequence timings, targets, tween stops (their forms, their checks and their ends), and definitions: values checked as they're made, naming, immutability, their entries, and private constructors.
 
-Values are tested through stand-in `CSSValueResolver`s that align numbers with `alignNumbers` and give every property a current value of 0.25. The tests run without a DOM. `tests/play.test.ts` plays definitions on a stand-in one and checks the animations' ids and staggered delays, but `domValueResolver`, probes and real elements have no tests yet.
+The tests run without a DOM, so they stand in for the page's globals: `tests/tracks.test.ts` stubs `CSS` and `getComputedStyle` so every value is taken, a bare number has no unit, and every property's current value is 0.25 ('none' for the values passed through). `tests/play.test.ts` plays definitions on a stand-in DOM and checks the animations' ids and staggered delays, but probes and real elements have no tests yet.
 
 `tests/readme-examples.test-d.ts` type-checks the README's examples, and the mistakes the README says the types reject. `npm test` runs it through Vitest's type checking, with `tests/tsconfig.json`, which includes the type tests.
 
@@ -1032,5 +1022,4 @@ Values are tested through stand-in `CSSValueResolver`s that align numbers with `
 - **The before flag.** Only an effect's own easing gets WAAPI's before flag. So an effect whose first keyframe starts with a jump, such as jump-start steps split by a stop or a reversed jump-end, shows the jumped value during its backwards fill.
 - **Sequences have no playback options:** no delay, stagger or repeats. Merging a repeating sequence's entries (§5.4) is in place, but nothing reaches it until sequences repeat.
 - **Continuations start from what's under them.** What goes on under a repeating group, from an entry in it that repeats forever, takes its missing values from what's under it on the track, not from its copy in the group, so it can carry on from different values than the copy played with.
-- **Values between two are aligned per call.** `TrackValues.textBetween` parses and aligns its two texts each time, with no cache of parsed values.
 - **Probes are global.** They're registered once per document and can't be unregistered.

@@ -1,6 +1,6 @@
 "use client";
 
-import {useMemo, useState} from "react";
+import {useMemo, useState, useSyncExternalStore} from "react";
 import {Card, CardContent, CardHeader, CardTitle} from "@/components/ui/card";
 import {BallRace} from "./ball-race";
 import {FitCharts} from "./fit-charts";
@@ -14,13 +14,16 @@ export function SpringDemo() {
     const [valuesByKind, setValuesByKind] = useState(initialValuesByKind);
     const values = valuesByKind[kind];
     const transition = useMemo(() => transitionOf(kind, values), [kind, values]);
+    // The fit plays the spring through the library's CSS values, which only the browser has.
+    const inBrowser = useSyncExternalStore(subscribeToNothing, () => true, () => false);
     const fit = useMemo(() => {
+        if (!inBrowser) return undefined;
         try {
             return fitSpring(transition);
         } catch (error) {
             return error instanceof Error ? error : new Error(String(error));
         }
-    }, [transition]);
+    }, [inBrowser, transition]);
 
     return (
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
@@ -37,7 +40,7 @@ export function SpringDemo() {
                     <CardContent>
                         {fit instanceof Error
                             ? <p className="text-sm text-destructive">{fit.message}</p>
-                            : <FitCharts fit={fit}/>}
+                            : fit && <FitCharts fit={fit}/>}
                     </CardContent>
                 </Card>
             </div>
@@ -55,7 +58,7 @@ export function SpringDemo() {
                         />
                     </CardContent>
                 </Card>
-                {!(fit instanceof Error) && (
+                {fit && !(fit instanceof Error) && (
                     <Card>
                         <CardHeader>
                             <CardTitle>Stats</CardTitle>
@@ -68,4 +71,9 @@ export function SpringDemo() {
             </div>
         </div>
     );
+}
+
+/** Nothing changes whether it runs in the browser, so there's nothing to subscribe to. */
+function subscribeToNothing(): () => void {
+    return () => {};
 }

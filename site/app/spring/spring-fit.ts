@@ -4,7 +4,6 @@ import {
     NativeEffectsResolver,
     type NativeKeyframe,
     naming,
-    plainNumberResolver,
     plan,
     SpringSplineFitter,
     TracksResolver
@@ -72,16 +71,16 @@ export function fitSpring(transition: SpringTransitionOptions): SpringFit {
     };
 }
 
-/** The plan only takes it as the target, and the tracks are keyed by it, so a plain object stands in for an element, which the server doesn't have. */
+/** The plan only takes it as the target, the tracks are keyed by it, and both of the spring's values are given in one unit, so nothing reads it: a plain object stands in for an element. */
 const standInElement = {} as Element;
 
 /** The keyframes the WAAPI adapter plays the spring as, from 0 to 1. */
 function keyframesOf(transition: SpringTransitionOptions): readonly NativeKeyframe[] {
-    const definition = animation(standInElement, {progress: [0, 1]}, transition);
+    const definition = animation(standInElement, {opacity: [0, 1]}, transition);
     const definitionPlan = plan(definition, () => [standInElement]);
     if (!definitionPlan) throw new Error("A spring on its stand-in element should have a plan.");
-    const tracks = NativeEffectsResolver.resolve(new TracksResolver(definitionPlan, naming).resolve(), plainNumberResolver);
-    const [effect, ...others] = tracks.get(standInElement)!.progress!;
+    const tracks = NativeEffectsResolver.resolve(new TracksResolver(definitionPlan, naming).resolve());
+    const [effect, ...others] = tracks.get(standInElement)!.opacity!;
     if (!effect || others.length > 0) throw new Error("A spring on its own should play as one effect.");
     return effect.keyframes;
 }

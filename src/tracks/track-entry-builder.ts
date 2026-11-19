@@ -111,8 +111,8 @@ export class TrackItemBuilder extends TrackEntryBuilder {
     }
 
     build(): TrackItem {
-        const {name, timing, easing, stops, holdsBefore, holdsAfter} = this;
-        return {type: 'item', name, ...timing, easing, stops, holdsBefore, holdsAfter};
+        const {name, timing, end, easing, stops, holdsBefore, holdsAfter} = this;
+        return {type: 'item', name, ...timing, end, easing, stops, holdsBefore, holdsAfter};
     }
 
     protected withTiming(timing: TrackEntry): TrackItemBuilder {
@@ -154,8 +154,8 @@ export class TrackGroupBuilder extends TrackEntryBuilder {
     }
 
     build(): TrackGroup {
-        const {name, timing, entries, holdsBefore, holdsAfter} = this;
-        return {type: 'group', name, ...timing, entries: entries.map(entry => entry.build()), holdsBefore, holdsAfter};
+        const {name, timing, end, entries, holdsBefore, holdsAfter} = this;
+        return {type: 'group', name, ...timing, end, entries: entries.map(entry => entry.build()), holdsBefore, holdsAfter};
     }
 
     protected withTiming(timing: TrackEntry): TrackGroupBuilder {
